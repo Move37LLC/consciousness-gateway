@@ -1,0 +1,39 @@
+{
+  "name": "consciousness-gateway",
+  "version": "0.1.0",
+  "description": "Consciousness-first AI routing with Product Algebra fusion and GATO alignment",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "ts-node src/test.ts"
+  },
+  "keywords": [
+    "ai",
+    "alignment",
+    "consciousness",
+    "routing",
+    "gateway"
+  ],
+  "author": "Javier, Claude Beaumont, Claude Kern",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
+    "@google/generative-ai": "^0.24.1",
+    "better-sqlite3": "^12.6.2",
+    "dotenv": "^17.2.4",
+    "express": "^4.21.0",
+    "openai": "^6.21.0",
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/dotenv": "^6.1.1",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.7.0"
+  }
+}
