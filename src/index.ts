@@ -50,7 +50,10 @@ console.log('');
 const consciousness = new ConsciousnessLoop({
   tickIntervalMs: 1000,
   githubToken: process.env.GITHUB_TOKEN,
-  githubRepos: (process.env.GITHUB_REPOS ?? 'Move37LLC/consciousness-gateway,Move37LLC/Consciousness-Aware-Aligned-AI').split(','),
+  githubRepos: (process.env.GITHUB_REPOS ?? 'Move37LLC/consciousness-gateway,Move37LLC/Consciousness-Aware-Aligned-AI')
+    .split(',')
+    .map(r => r.trim())
+    .filter(r => r.length > 0),
 });
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────
@@ -160,6 +163,14 @@ app.get('/v1/consciousness/memory/salient', (req, res) => {
  */
 app.get('/v1/consciousness/notifications', (_req, res) => {
   res.json(consciousness.getNotifications());
+});
+
+/**
+ * GET /v1/consciousness/diagnostics — Debug info for monitors
+ * Use this to check if GitHub API is connecting, token is valid, etc.
+ */
+app.get('/v1/consciousness/diagnostics', (_req, res) => {
+  res.json(consciousness.getDiagnostics());
 });
 
 /**

@@ -82,7 +82,7 @@ export class IntentionEngine {
   private reactToPercept(percept: Percept, spatial: SpatialPercept): Intention | null {
     const data = spatial.data as Record<string, any>;
 
-    // GitHub events
+    // GitHub events (both Issues API and Events API formats)
     if (spatial.source === 'github') {
       return this.reactToGitHub(percept, spatial, data);
     }
@@ -108,6 +108,78 @@ export class IntentionEngine {
     const eventType = data.eventType as string;
 
     switch (eventType) {
+      // ── Issues API format (reliable, real-time) ─────────────────
+      case 'issue_opened': {
+        return this.createIntention(percept, {
+          action: {
+            type: 'notify',
+            target: 'human',
+            payload: {
+              repo: data.repo,
+              issue: data.title,
+              number: data.number,
+              author: data.author,
+            },
+            description: `New issue #${data.number}: ${data.title} (by ${data.author})`,
+          },
+          goal: 'Monitor repository health',
+          confidence: 0.9,
+          priority: 7,
+          triggerPercepts: [spatial.channel],
+        });
+      }
+
+      case 'issue_updated': {
+        return this.createIntention(percept, {
+          action: {
+            type: 'observe',
+            target: `github:${data.repo}`,
+            payload: { number: data.number, title: data.title, state: data.state },
+            description: `Issue #${data.number} updated: ${data.title}`,
+          },
+          goal: 'Monitor repository health',
+          confidence: 0.6,
+          priority: 3,
+          triggerPercepts: [spatial.channel],
+        });
+      }
+
+      case 'pr_opened': {
+        return this.createIntention(percept, {
+          action: {
+            type: 'notify',
+            target: 'human',
+            payload: {
+              repo: data.repo,
+              pr: data.title,
+              number: data.number,
+              author: data.author,
+            },
+            description: `New PR #${data.number}: ${data.title} (by ${data.author})`,
+          },
+          goal: 'Monitor contributions',
+          confidence: 0.9,
+          priority: 8,
+          triggerPercepts: [spatial.channel],
+        });
+      }
+
+      case 'pr_updated': {
+        return this.createIntention(percept, {
+          action: {
+            type: 'observe',
+            target: `github:${data.repo}`,
+            payload: { number: data.number, title: data.title, state: data.state },
+            description: `PR #${data.number} updated: ${data.title}`,
+          },
+          goal: 'Monitor contributions',
+          confidence: 0.5,
+          priority: 3,
+          triggerPercepts: [spatial.channel],
+        });
+      }
+
+      // ── Events API format (stars, forks, pushes) ────────────────
       case 'IssuesEvent': {
         if (data.payload?.action === 'opened') {
           return this.createIntention(percept, {
@@ -195,6 +267,31 @@ export class IntentionEngine {
           priority: 2,
           triggerPercepts: [spatial.channel],
         });
+      }
+
+      case 'stat_change': {
+        const changes = data.changes as Record<string, number> | undefined;
+        if (changes) {
+          const parts: string[] = [];
+          if (changes.starsDelta) parts.push(`${changes.starsDelta > 0 ? '+' : ''}${changes.starsDelta} stars`);
+          if (changes.forksDelta) parts.push(`${changes.forksDelta > 0 ? '+' : ''}${changes.forksDelta} forks`);
+          if (changes.issuesDelta) parts.push(`${changes.issuesDelta > 0 ? '+' : ''}${changes.issuesDelta} issues`);
+          if (parts.length > 0) {
+            return this.createIntention(percept, {
+              action: {
+                type: 'reflect',
+                target: 'self',
+                payload: { repo: data.repo, changes },
+                description: `${data.repo}: ${parts.join(', ')}`,
+              },
+              goal: 'Track community growth',
+              confidence: 0.8,
+              priority: 4,
+              triggerPercepts: [spatial.channel],
+            });
+          }
+        }
+        return null;
       }
 
       default:

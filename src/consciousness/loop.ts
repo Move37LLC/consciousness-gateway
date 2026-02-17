@@ -199,8 +199,9 @@ export class ConsciousnessLoop {
       try {
         const percepts = await monitor.poll();
         spatialPercepts.push(...percepts);
-      } catch {
-        // Non-fatal: skip this monitor this tick
+      } catch (err) {
+        // Log on first occurrence, not every tick
+        console.error(`  [consciousness] ${monitor.name} poll error:`, err);
       }
     }
 
@@ -356,6 +357,28 @@ export class ConsciousnessLoop {
 
   getHighSalienceMemories(minSalience?: number, limit?: number) {
     return this.memory.getHighSalienceMemories(minSalience, limit);
+  }
+
+  /**
+   * Get diagnostics from all monitors for debugging.
+   */
+  getDiagnostics(): Record<string, unknown> {
+    const diag: Record<string, unknown> = {
+      running: this.running,
+      tick: this.tick,
+      uptimeSeconds: this.running ? (Date.now() - this.startedAt) / 1000 : 0,
+      workingMemorySize: this.workingMemory.length,
+    };
+
+    for (const monitor of this.monitors) {
+      if ('getDiagnostics' in monitor && typeof (monitor as any).getDiagnostics === 'function') {
+        diag[monitor.name] = (monitor as any).getDiagnostics();
+      } else {
+        diag[monitor.name] = { available: monitor.available, pollInterval: monitor.pollInterval };
+      }
+    }
+
+    return diag;
   }
 
   isRunning(): boolean {
