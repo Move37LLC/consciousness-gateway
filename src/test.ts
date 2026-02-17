@@ -388,6 +388,40 @@ async function test() {
   try { fs.unlinkSync(defaultConsDb + '-wal'); } catch {}
   try { fs.unlinkSync(defaultConsDb + '-shm'); } catch {}
 
+  // ── Test: Telegram Module Importable ───────────────────────────
+  section('Test: Telegram channel module');
+
+  try {
+    const { TelegramChannel } = await import('./channels/telegram');
+    check('Telegram module imports', typeof TelegramChannel === 'function');
+    check('TelegramChannel is constructable', TelegramChannel.prototype !== undefined);
+  } catch (err) {
+    check('Telegram module imports', false, String(err));
+  }
+
+  // ── Test: Dashboard Static Files ──────────────────────────────
+  section('Test: Dashboard static files');
+
+  const dashboardPath = path.join(__dirname, '..', 'public', 'index.html');
+  const dashboardExists = fs.existsSync(dashboardPath);
+  check('Dashboard HTML exists', dashboardExists);
+
+  if (dashboardExists) {
+    const html = fs.readFileSync(dashboardPath, 'utf-8');
+    check('Dashboard contains React', html.includes('react'));
+    check('Dashboard contains Tailwind', html.includes('tailwind'));
+    check('Dashboard polls /v1/consciousness', html.includes('/v1/consciousness'));
+    check('Dashboard polls /v1/health', html.includes('/v1/health'));
+    check('Dashboard polls /v1/consciousness/memory', html.includes('/v1/consciousness/memory'));
+    check('Dashboard has chat interface', html.includes('/v1/chat'));
+    check('Dashboard has consciousness panel', html.includes('ConsciousnessPanel'));
+    check('Dashboard has dharma panel', html.includes('DharmaPanel'));
+    check('Dashboard has memory timeline', html.includes('MemoryTimeline'));
+    check('Dashboard has goals panel', html.includes('GoalsPanel'));
+    check('Dashboard has monitors panel', html.includes('MonitorsPanel'));
+    check('Dashboard mobile responsive', html.includes('viewport'));
+  }
+
   // ── Summary ───────────────────────────────────────────────────
   console.log('\n  ====================================================');
   console.log(`  Results: ${passed} passed, ${failed} failed`);
@@ -408,6 +442,8 @@ async function test() {
     console.log('    Action                      -- GATO-authorized execution');
     console.log('    Memory                      -- Persistent consciousness history');
     console.log('    Loop                        -- Continuous perception-action cycle');
+    console.log('    Telegram                    -- Bot module');
+    console.log('    Dashboard                   -- Web UI');
     console.log('');
   }
 }

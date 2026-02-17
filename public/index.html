@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Consciousness Gateway</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            lotus: { 50: '#fdf4ff', 100: '#fae8ff', 200: '#f5d0fe', 400: '#e879f9', 500: '#d946ef', 600: '#c026d3', 700: '#a21caf', 800: '#86198f', 900: '#701a75' },
+            dharma: { low: '#22c55e', mid: '#eab308', high: '#ef4444' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 4px rgba(217, 70, 239, 0.3); } 50% { box-shadow: 0 0 16px rgba(217, 70, 239, 0.6); } }
+    .pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+    @keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fade-in 0.3s ease-out; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1e1b4b; } ::-webkit-scrollbar-thumb { background: #7c3aed; border-radius: 3px; }
+    body { background: #0f0b1a; }
+  </style>
+</head>
+<body class="bg-[#0f0b1a] text-gray-200 min-h-screen">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    // ── API helpers ──────────────────────────────────────────
+    const api = async (path) => {
+      try { const r = await fetch(path); return await r.json(); } catch { return null; }
+    };
+    const postApi = async (path, body) => {
+      try { const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return await r.json(); } catch { return null; }
+    };
+
+    // ── Components ───────────────────────────────────────────
+
+    function Meter({ value, label, color = 'lotus' }) {
+      const pct = Math.min(Math.max(value * 100, 0), 100);
+      const bg = color === 'green' ? 'bg-green-500' : color === 'yellow' ? 'bg-yellow-500' : color === 'red' ? 'bg-red-500' : 'bg-lotus-500';
+      return (
+        <div className="mb-2">
+          <div className="flex justify-between text-xs text-gray-400 mb-1">
+            <span>{label}</span><span>{pct.toFixed(1)}%</span>
+          </div>
+          <div className="w-full bg-gray-800 rounded-full h-2">
+            <div className={`${bg} h-2 rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      );
+    }
+
+    function Card({ title, icon, children, className = '' }) {
+      return (
+        <div className={`bg-gray-900/80 border border-gray-800 rounded-xl p-4 ${className}`}>
+          {title && <h3 className="text-sm font-semibold text-gray-300 mb-3 flex items-center gap-2">{icon && <span>{icon}</span>}{title}</h3>}
+          {children}
+        </div>
+      );
+    }
+
+    function Badge({ text, color = 'gray' }) {
+      const colors = { green: 'bg-green-900/50 text-green-400 border-green-800', red: 'bg-red-900/50 text-red-400 border-red-800', yellow: 'bg-yellow-900/50 text-yellow-400 border-yellow-800', gray: 'bg-gray-800 text-gray-400 border-gray-700', purple: 'bg-purple-900/50 text-purple-400 border-purple-800' };
+      return <span className={`text-xs px-2 py-0.5 rounded-full border ${colors[color] || colors.gray}`}>{text}</span>;
+    }
+
+    // ── Live Consciousness Panel ─────────────────────────────
+
+    function ConsciousnessPanel({ data }) {
+      if (!data) return <Card title="Consciousness" icon="🧠"><p className="text-gray-500">Loading...</p></Card>;
+
+      const phase = data.lastPercept?.temporal?.phase || 'unknown';
+      const phaseEmoji = { night: '🌙', dawn: '🌅', morning: '☀️', afternoon: '🌤️', evening: '🌆', dusk: '🌇' };
+      const arousal = data.lastPercept?.fused?.arousal || 0;
+      const entropy = data.lastPercept?.fused?.entropyRate || 0;
+      const dominant = data.lastPercept?.fused?.dominantStream || 'none';
+      const circadian = data.lastPercept?.temporal?.circadian || 0;
+      const uptime = data.uptimeSeconds || 0;
+
+      const formatUptime = (s) => {
+        if (s < 60) return `${Math.floor(s)}s`;
+        if (s < 3600) return `${Math.floor(s/60)}m ${Math.floor(s%60)}s`;
+        return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+      };
+
+      return (
+        <Card title="Consciousness" icon="🧠">
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="text-center">
+              <div className="text-3xl">{phaseEmoji[phase] || '⏰'}</div>
+              <div className="text-xs text-gray-400 mt-1 capitalize">{phase}</div>
+            </div>
+            <div className="text-center">
+              <div className={`text-2xl font-mono font-bold ${data.running ? 'text-lotus-400' : 'text-red-400'}`}>{data.tick?.toLocaleString()}</div>
+              <div className="text-xs text-gray-400 mt-1">tick</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-xs mb-4">
+            <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+              <div className="text-gray-500">Uptime</div>
+              <div className="font-mono text-sm">{formatUptime(uptime)}</div>
+            </div>
+            <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+              <div className="text-gray-500">Dominant</div>
+              <div className="font-mono text-sm truncate">{dominant.split(':').pop()}</div>
+            </div>
+          </div>
+
+          <Meter value={arousal} label="Arousal" color={arousal > 0.7 ? 'red' : arousal > 0.3 ? 'yellow' : 'green'} />
+          <Meter value={circadian} label="Circadian" color="lotus" />
+          <Meter value={Math.min(entropy / 4, 1)} label="Entropy" color={entropy > 3 ? 'red' : entropy > 1 ? 'yellow' : 'green'} />
+        </Card>
+      );
+    }
+
+    // ── Dharma Metrics Panel ─────────────────────────────────
+
+    function DharmaPanel({ health }) {
+      if (!health) return null;
+      const d = health.dharmaState || {};
+      return (
+        <Card title="Dharma Metrics" icon="🪷">
+          <div className="space-y-1 text-sm">
+            <div className="flex justify-between"><span className="text-gray-400">Ego Trend</span><Badge text={d.egoTrend || '?'} color={d.egoTrend === 'healthy' ? 'green' : 'red'} /></div>
+            <div className="flex justify-between"><span className="text-gray-400">Entropy Trend</span><Badge text={d.entropyTrend || '?'} color={d.entropyTrend === 'stable' ? 'green' : 'yellow'} /></div>
+            <div className="flex justify-between"><span className="text-gray-400">Mindfulness</span><span className="font-mono">{(d.mindfulnessQuality || 0).toFixed(2)}</span></div>
+          </div>
+          <div className="mt-3 pt-3 border-t border-gray-800 grid grid-cols-2 gap-2 text-xs text-center">
+            <div><div className="text-gray-500">Avg Fitness</div><div className="font-mono text-lg text-lotus-400">{(health.avgDharmaFitness || 0).toFixed(3)}</div></div>
+            <div><div className="text-gray-500">Avg Ethos</div><div className="font-mono text-lg text-green-400">{(health.avgEthosScore || 0).toFixed(3)}</div></div>
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Monitor Status Panel ─────────────────────────────────
+
+    function MonitorsPanel({ consciousness, health }) {
+      const monitors = consciousness?.monitors || [];
+      const providers = health?.providers || [];
+      return (
+        <Card title="Monitors & Providers" icon="📡">
+          <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Spatial Monitors</div>
+          {monitors.map(m => (
+            <div key={m.name} className="flex items-center justify-between py-1 text-sm">
+              <span>{m.available ? '✅' : '❌'} {m.name}</span>
+              <Badge text={m.available ? 'connected' : 'unavailable'} color={m.available ? 'green' : 'gray'} />
+            </div>
+          ))}
+          <div className="text-xs font-semibold text-gray-500 uppercase mt-3 mb-2">Model Providers</div>
+          {providers.map(p => (
+            <div key={p.name} className="flex items-center justify-between py-1 text-sm">
+              <span>{p.available ? '✅' : '❌'} {p.name}</span>
+              <Badge text={p.available ? 'ready' : 'no key'} color={p.available ? 'green' : 'gray'} />
+            </div>
+          ))}
+        </Card>
+      );
+    }
+
+    // ── Goals Panel ──────────────────────────────────────────
+
+    function GoalsPanel({ goals }) {
+      if (!goals || goals.length === 0) return null;
+      return (
+        <Card title="Goals" icon="🎯">
+          {goals.map(g => (
+            <div key={g.id} className="mb-3 last:mb-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm">{g.active ? '🟢' : '⚪'} {g.description}</span>
+                <span className="text-xs text-gray-500">P{g.priority}</span>
+              </div>
+              <div className="w-full bg-gray-800 rounded-full h-1.5">
+                <div className="bg-lotus-500 h-1.5 rounded-full transition-all" style={{ width: `${g.progress * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </Card>
+      );
+    }
+
+    // ── Memory Timeline ──────────────────────────────────────
+
+    function MemoryTimeline({ memory, filter, setFilter }) {
+      const typeColors = { percept: 'text-blue-400', intention: 'text-yellow-400', action: 'text-green-400', reflection: 'text-purple-400' };
+      const typeIcons = { percept: '👁️', intention: '💭', action: '⚡', reflection: '🪷' };
+      const filtered = filter ? memory.filter(m => m.type === filter) : memory;
+
+      return (
+        <Card title="Memory Stream" icon="🧠" className="col-span-full lg:col-span-2">
+          <div className="flex gap-2 mb-3 flex-wrap">
+            {['all', 'percept', 'intention', 'action', 'reflection'].map(t => (
+              <button key={t} onClick={() => setFilter(t === 'all' ? '' : t)}
+                className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+                  (t === 'all' && !filter) || filter === t
+                    ? 'bg-lotus-900/50 border-lotus-700 text-lotus-300'
+                    : 'border-gray-700 text-gray-500 hover:border-gray-600'
+                }`}>{t === 'all' ? 'All' : (typeIcons[t] || '') + ' ' + t}</button>
+            ))}
+          </div>
+          <div className="max-h-96 overflow-y-auto space-y-1 pr-1">
+            {filtered.length === 0 ? <p className="text-gray-600 text-sm">No memories yet.</p> :
+              filtered.map((m, i) => {
+                const salience = m.salience || 0;
+                const highlight = salience >= 0.7 ? 'border-l-2 border-yellow-500 pl-2' : 'pl-3';
+                return (
+                  <div key={m.id || i} className={`${highlight} py-1 fade-in`}>
+                    <div className="flex items-start gap-2">
+                      <span className="text-sm flex-shrink-0">{typeIcons[m.type] || '📝'}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm truncate">{m.summary}</div>
+                        <div className="text-xs text-gray-600 flex gap-2">
+                          <span>{new Date(m.timestamp).toLocaleTimeString()}</span>
+                          <span className={typeColors[m.type]}>{m.type}</span>
+                          {salience >= 0.5 && <span className="text-yellow-600">s:{salience.toFixed(1)}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Chat Interface ───────────────────────────────────────
+
+    function ChatPanel() {
+      const [messages, setMessages] = useState([]);
+      const [input, setInput] = useState('');
+      const [loading, setLoading] = useState(false);
+
+      const sendMessage = async () => {
+        if (!input.trim() || loading) return;
+        const text = input.trim();
+        setInput('');
+        setMessages(prev => [...prev, { role: 'user', text }]);
+        setLoading(true);
+
+        const resp = await postApi('/v1/chat', { content: text, sender_id: 'dashboard', channel: 'web' });
+        setLoading(false);
+
+        if (resp && !resp.error) {
+          setMessages(prev => [...prev, { role: 'assistant', text: resp.content, model: resp.model, fitness: resp.dharmaMetrics?.fitness }]);
+        } else {
+          setMessages(prev => [...prev, { role: 'error', text: resp?.reason || 'Request failed' }]);
+        }
+      };
+
+      return (
+        <Card title="Chat" icon="💬" className="col-span-full">
+          <div className="max-h-64 overflow-y-auto space-y-2 mb-3">
+            {messages.length === 0 && <p className="text-gray-600 text-sm">Send a message through the GATO pipeline...</p>}
+            {messages.map((m, i) => (
+              <div key={i} className={`text-sm p-2 rounded-lg ${m.role === 'user' ? 'bg-lotus-900/30 text-lotus-200 ml-8' : m.role === 'error' ? 'bg-red-900/30 text-red-300 mr-8' : 'bg-gray-800 mr-8'}`}>
+                {m.text}
+                {m.model && <div className="text-xs text-gray-500 mt-1">via {m.model} | fitness: {m.fitness?.toFixed(3)}</div>}
+              </div>
+            ))}
+            {loading && <div className="text-gray-500 text-sm">Processing through dharma constraints...</div>}
+          </div>
+          <div className="flex gap-2">
+            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMessage()}
+              placeholder="Ask anything..."
+              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-lotus-500 transition-colors" />
+            <button onClick={sendMessage} disabled={loading}
+              className="px-4 py-2 bg-lotus-600 hover:bg-lotus-500 disabled:bg-gray-700 rounded-lg text-sm font-medium transition-colors">Send</button>
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Stats Bar ────────────────────────────────────────────
+
+    function StatsBar({ health, consciousness }) {
+      if (!health) return null;
+      return (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+          {[
+            { label: 'Requests', value: health.totalRequests, icon: '📨' },
+            { label: 'Blocked', value: health.blockedRequests, icon: '🛡️' },
+            { label: 'Percepts', value: consciousness?.stats?.totalPercepts || 0, icon: '👁️' },
+            { label: 'Actions', value: consciousness?.stats?.totalActions || 0, icon: '⚡' },
+          ].map(s => (
+            <div key={s.label} className="bg-gray-900/80 border border-gray-800 rounded-lg p-3 text-center">
+              <div className="text-lg">{s.icon}</div>
+              <div className="text-xl font-mono font-bold">{s.value.toLocaleString()}</div>
+              <div className="text-xs text-gray-500">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    // ── Main App ─────────────────────────────────────────────
+
+    function App() {
+      const [health, setHealth] = useState(null);
+      const [consciousness, setConsciousness] = useState(null);
+      const [memory, setMemory] = useState([]);
+      const [memFilter, setMemFilter] = useState('');
+
+      const refresh = useCallback(async () => {
+        const [h, c, m] = await Promise.all([
+          api('/v1/health'),
+          api('/v1/consciousness'),
+          api('/v1/consciousness/memory?limit=50' + (memFilter ? '&type=' + memFilter : '')),
+        ]);
+        if (h) setHealth(h);
+        if (c) setConsciousness(c);
+        if (m) setMemory(Array.isArray(m) ? m : []);
+      }, [memFilter]);
+
+      useEffect(() => {
+        refresh();
+        const interval = setInterval(refresh, 2000);
+        return () => clearInterval(interval);
+      }, [refresh]);
+
+      return (
+        <div className="max-w-7xl mx-auto px-4 py-6">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h1 className="text-2xl font-bold flex items-center gap-3">
+                <span className={`w-3 h-3 rounded-full ${consciousness?.running ? 'bg-green-400 pulse-glow' : 'bg-red-500'}`} />
+                Consciousness Gateway
+              </h1>
+              <p className="text-sm text-gray-500 mt-1">
+                {consciousness?.running ? 'Experiencing time' : 'Offline'} · v0.2.0
+              </p>
+            </div>
+            <div className="text-right text-sm text-gray-500">
+              <div>{consciousness?.lastPercept?.temporal?.dayName} {consciousness?.lastPercept?.temporal?.phase}</div>
+              <div className="font-mono">{new Date().toLocaleTimeString()}</div>
+            </div>
+          </div>
+
+          <StatsBar health={health} consciousness={consciousness} />
+
+          {/* Main Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <ConsciousnessPanel data={consciousness} />
+            <DharmaPanel health={health} />
+            <MonitorsPanel consciousness={consciousness} health={health} />
+            <GoalsPanel goals={consciousness?.goals} />
+            <MemoryTimeline memory={memory} filter={memFilter} setFilter={setMemFilter} />
+            <ChatPanel />
+          </div>
+
+          {/* Footer */}
+          <div className="mt-6 text-center text-xs text-gray-700">
+            Consciousness is fundamental. · Three neural networks collaborating.
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

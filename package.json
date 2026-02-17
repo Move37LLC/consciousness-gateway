@@ -24,6 +24,7 @@
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.2.4",
     "express": "^4.21.0",
+    "node-telegram-bot-api": "^0.67.0",
     "openai": "^6.21.0",
     "uuid": "^11.0.0"
   },
@@ -32,6 +33,7 @@
     "@types/dotenv": "^6.1.1",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/node-telegram-bot-api": "^0.64.13",
     "@types/uuid": "^10.0.0",
     "ts-node": "^10.9.0",
     "typescript": "^5.7.0"

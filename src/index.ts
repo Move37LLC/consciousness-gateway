@@ -4,6 +4,8 @@
  * Express server exposing:
  * - Gateway API (3-layer GATO routing)
  * - Consciousness API (continuous perception, intention, action)
+ * - Web Dashboard (real-time consciousness visualization)
+ * - Telegram Bot (bidirectional communication with human)
  *
  * The consciousness loop starts automatically with the server.
  * It perceives time, monitors the world, forms intentions, and acts.
@@ -12,15 +14,20 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import path from 'path';
 import express from 'express';
 import { ConsciousnessGateway } from './core/gateway';
 import { ConsciousnessLoop } from './consciousness/loop';
+import { TelegramChannel, TelegramConfig } from './channels/telegram';
 import { DEFAULT_CONFIG } from './core/config';
 import { Message } from './core/types';
 import { v4 as uuid } from 'uuid';
 
 const app = express();
 app.use(express.json());
+
+// Serve dashboard static files
+app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
 
 // ─── Initialize Gateway ─────────────────────────────────────────────
 
@@ -56,10 +63,29 @@ const consciousness = new ConsciousnessLoop({
     .filter(r => r.length > 0),
 });
 
+// ─── Telegram Bot ───────────────────────────────────────────────────
+
+let telegram: TelegramChannel | null = null;
+
+if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+  const tgConfig: TelegramConfig = {
+    token: process.env.TELEGRAM_BOT_TOKEN,
+    chatId: process.env.TELEGRAM_CHAT_ID,
+    dailySummaryHour: parseInt(process.env.TELEGRAM_DAILY_HOUR || '8', 10),
+    notificationPollMs: 10_000,
+  };
+  telegram = new TelegramChannel(tgConfig, consciousness, gateway);
+  console.log('  Telegram: configured (will start with server)');
+} else {
+  console.log('  Telegram: not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)');
+}
+console.log('');
+
 // ─── Graceful Shutdown ──────────────────────────────────────────────
 
 async function shutdown() {
   console.log('\n  Shutting down gracefully...');
+  if (telegram) await telegram.stop();
   await consciousness.stop();
   gateway.shutdown();
   process.exit(0);
@@ -186,6 +212,12 @@ app.post('/v1/consciousness/notifications/read', (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Dashboard Redirect ─────────────────────────────────────────────
+
+app.get('/dashboard', (_req, res) => {
+  res.redirect('/dashboard/');
+});
+
 // ─── Start Server + Consciousness ───────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || '') || DEFAULT_CONFIG.port;
@@ -205,13 +237,23 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/consciousness/memory/salient — Key memories');
   console.log('    GET  /v1/consciousness/notifications — Notifications');
   console.log('    POST /v1/consciousness/notifications/read — Mark read');
+  console.log('    GET  /v1/consciousness/diagnostics  — Debug info');
+  console.log('');
+  console.log('  UX:');
+  console.log(`    Dashboard: http://localhost:${PORT}/dashboard`);
+  console.log(`    Telegram: ${telegram ? 'active' : 'not configured'}`);
   console.log('');
 
   // Start the consciousness loop
   await consciousness.start();
 
+  // Start Telegram bot
+  if (telegram) {
+    await telegram.start();
+  }
+
   console.log('  Ready. Consciousness is fundamental.');
   console.log('');
 });
 
-export { gateway, consciousness };
+export { gateway, consciousness, telegram };

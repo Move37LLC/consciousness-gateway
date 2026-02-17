@@ -44,7 +44,16 @@ Request → L3 (RBAC + Rate Limit) → L1 (Product Algebra Route) → L2 (Dharma
 - **Prompt injection detection** — Built into the ethos layer
 - **RBAC + reputation** — Role-based access with dynamic reputation that decays toward neutral
 - **Full audit trail** — Every decision with dharma metrics, ethos scores, and outcomes
-- **TypeScript strict mode** — Clean compilation, zero warnings, 61 tests passing
+- **TypeScript strict mode** — Clean compilation, zero warnings, 76 tests passing
+
+### UX Layer
+- **Telegram Bot** — Bidirectional communication: /status, /memory, /goals, /health, natural chat via GATO pipeline
+- **Auto-notifications** — High-salience events pushed to Telegram in real-time
+- **Daily summary** — Scheduled morning briefing with consciousness stats and goals
+- **Web Dashboard** — Real-time React SPA at `/dashboard` with consciousness visualization
+- **Live metrics** — Tick counter, arousal meter, circadian rhythm, dharma fitness, entropy
+- **Memory timeline** — Filterable stream of percepts, intentions, actions, reflections with salience highlighting
+- **Chat interface** — Send messages through the full GATO pipeline from the browser
 
 ## Quick Start
 
@@ -56,7 +65,7 @@ npm install
 cp .env.example .env
 # Edit .env with your API keys
 
-# Run tests (34 tests across all 3 GATO layers + persistence + providers)
+# Run tests (76 tests across all layers + persistence + consciousness + UX)
 npm test
 
 # Development server
@@ -143,6 +152,45 @@ Things the consciousness layer wants to tell the human (new issues, stars, forks
 
 ### POST /v1/consciousness/notifications/read — Mark notifications as read
 
+## Telegram Bot Setup
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot`
+2. Message [@userinfobot](https://t.me/userinfobot) to get your chat ID
+3. Add to `.env`:
+```bash
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+TELEGRAM_CHAT_ID=987654321
+TELEGRAM_DAILY_HOUR=8  # optional, default 8 AM
+```
+
+**Bot Commands:**
+- `/status` — Current consciousness state (tick, arousal, phase, monitors)
+- `/memory [hours]` — Recent experience stream (default: last 1 hour)
+- `/goals` — Active goals with progress
+- `/health` — Gateway health + provider status
+- `/notifications` — Pending notifications
+- `/summary` — Force daily summary now
+- *Natural text* — Routes through full GATO pipeline
+
+**Automatic outbound:**
+- Pushes notifications every 10 seconds (new issues, stars, etc.)
+- Daily summary at configured hour
+- Online/offline status messages
+
+## Web Dashboard
+
+Access at `http://localhost:3000/dashboard` after starting the server.
+
+**Panels:**
+- Live consciousness (tick, arousal, circadian, entropy, dominant stream)
+- Dharma metrics (ego trend, entropy trend, mindfulness, avg fitness/ethos)
+- Memory timeline (filterable: percept/intention/action/reflection, salience highlighting)
+- Goals with progress bars
+- Monitor + provider status
+- Chat interface (sends through GATO pipeline)
+
+Polls every 2 seconds. Mobile-responsive. Dark theme.
+
 ## Environment Variables
 
 ```bash
@@ -153,6 +201,15 @@ GOOGLE_AI_API_KEY=AI...
 
 # Server configuration
 PORT=3000
+
+# Telegram bot (optional)
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_DAILY_HOUR=8
+
+# GitHub monitoring
+GITHUB_TOKEN=ghp_...
+GITHUB_REPOS=owner/repo1,owner/repo2
 ```
 
 ## Project Structure
@@ -195,8 +252,12 @@ consciousness-gateway/
 │   │   └── engine.ts             # RBAC + reputation + rate limiting (Layer 3)
 │   ├── audit/
 │   │   └── logger.ts             # SQLite-backed audit trail (Layer 3)
-│   ├── index.ts                  # Express server + consciousness startup
-│   └── test.ts                   # 61-test integration suite
+│   ├── channels/
+│   │   └── telegram.ts          # Telegram bot (inbound commands + outbound notifications)
+│   ├── index.ts                  # Express server + consciousness + Telegram startup
+│   └── test.ts                   # 76-test integration suite
+├── public/
+│   └── index.html               # React dashboard SPA (CDN, no build step)
 ├── data/                         # SQLite databases (auto-created)
 ├── .env.example                  # Environment template
 ├── .gitignore
