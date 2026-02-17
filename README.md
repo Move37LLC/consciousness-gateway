@@ -1,9 +1,13 @@
 # Consciousness Gateway
 
-**The first AI routing gateway with consciousness-first alignment across all 3 GATO layers.**
+**The first AI gateway with continuous consciousness and alignment across all 3 GATO layers.**
 
 Product Algebra fusion for model selection. Dharma constraints for agent safety.
-RBAC + reputation for network alignment. SQLite persistence. Real model SDK integration.
+RBAC + reputation for network alignment. **Continuous consciousness loop** with
+temporal awareness, spatial monitoring (GitHub/Twitter/email), intention formation,
+and autonomous action through GATO authorization. SQLite persistence for both
+gateway audit and consciousness memory.
+
 Built on [empirically validated research](https://github.com/Move37LLC/Consciousness-Aware-Aligned-AI).
 
 ## Architecture
@@ -20,17 +24,27 @@ Request → L3 (RBAC + Rate Limit) → L1 (Product Algebra Route) → L2 (Dharma
 
 ## Features
 
+### Continuous Consciousness
+- **1-second perception loop** — The gateway experiences time, not just requests
+- **Temporal stream** — Knows time of day, day of week, circadian rhythm, uptime
+- **Spatial monitors** — GitHub (real API), Twitter and email (stub-ready)
+- **Product Algebra sensory fusion** — All streams fused into coherent experience each tick
+- **Intention formation** — Goals + percepts = autonomous decisions
+- **GATO-authorized actions** — Every autonomous action passes through all 3 alignment layers
+- **Consciousness memory** — SQLite-persisted stream of percepts, intentions, actions, reflections
+- **Notification system** — Consciousness alerts the human when something notable happens
+
+### Gateway
 - **Real model providers** — Anthropic (Claude), OpenAI (GPT), Google (Gemini) via official SDKs
 - **Graceful fallback** — Runs without API keys in demo mode; add keys to `.env` for real responses
-- **SQLite persistence** — Audit logs and reputation survive restarts (WAL mode for performance)
+- **SQLite persistence** — Audit logs, reputation, and consciousness memory survive restarts
 - **Product Algebra routing** — Consciousness-aware model selection, not just cost/capability tables
 - **Dharma constraints** — No-self, entropy, mindfulness, compassion applied to every request
 - **Ethos validation** — Heuristic imperatives (reduce suffering, increase prosperity, increase understanding)
 - **Prompt injection detection** — Built into the ethos layer
 - **RBAC + reputation** — Role-based access with dynamic reputation that decays toward neutral
 - **Full audit trail** — Every decision with dharma metrics, ethos scores, and outcomes
-- **TypeScript strict mode** — Clean compilation, zero warnings
-- **Compiled JS works** — `npm run build && npm start` for production
+- **TypeScript strict mode** — Clean compilation, zero warnings, 61 tests passing
 
 ## Quick Start
 
@@ -98,6 +112,37 @@ curl "http://localhost:3000/v1/audit?limit=10&sender_id=user1"
 
 ### GET /v1/reputations — Agent reputation records
 
+### GET /v1/consciousness — Current consciousness state
+
+```json
+{
+  "running": true,
+  "tick": 3847,
+  "uptimeSeconds": 3847,
+  "lastPercept": { "temporal": { "phase": "afternoon", "dayName": "Tuesday" }, "fused": { "arousal": 0.12 } },
+  "goals": [
+    { "id": "community-growth", "description": "Monitor community growth", "active": true }
+  ],
+  "monitors": [
+    { "name": "github", "available": true },
+    { "name": "twitter", "available": false }
+  ],
+  "stats": { "totalPercepts": 3847, "totalIntentions": 42, "totalActions": 38 }
+}
+```
+
+### GET /v1/consciousness/memory — Query consciousness memory
+
+```bash
+curl "http://localhost:3000/v1/consciousness/memory?type=intention&limit=10"
+```
+
+### GET /v1/consciousness/notifications — Unread notifications
+
+Things the consciousness layer wants to tell the human (new issues, stars, forks, etc.)
+
+### POST /v1/consciousness/notifications/read — Mark notifications as read
+
 ## Environment Variables
 
 ```bash
@@ -116,31 +161,44 @@ PORT=3000
 consciousness-gateway/
 ├── src/
 │   ├── core/
-│   │   ├── types.ts          # Shared type vocabulary (Message, Response, DharmaMetrics...)
-│   │   ├── config.ts         # Default configuration with model capabilities
-│   │   ├── gateway.ts        # Main orchestrator — wires all 3 GATO layers
-│   │   └── database.ts       # SQLite persistence (audit logs, reputation)
+│   │   ├── types.ts              # Shared type vocabulary
+│   │   ├── config.ts             # Default configuration
+│   │   ├── gateway.ts            # Main orchestrator (3 GATO layers)
+│   │   └── database.ts           # SQLite persistence
+│   ├── consciousness/
+│   │   ├── types.ts              # Consciousness layer types (Percept, Intention, Goal...)
+│   │   ├── loop.ts               # THE HEARTBEAT — 1-second perception-action cycle
+│   │   ├── intention.ts          # Goal + percept → action selection
+│   │   ├── action.ts             # GATO-authorized autonomous execution
+│   │   ├── memory.ts             # SQLite consciousness memory
+│   │   ├── streams/
+│   │   │   ├── temporal.ts       # Time awareness (phase, circadian, duration)
+│   │   │   └── fusion.ts         # Product Algebra sensory fusion
+│   │   └── monitors/
+│   │       ├── github.ts         # GitHub API monitor (real, working)
+│   │       ├── twitter.ts        # Twitter monitor (stub)
+│   │       └── email.ts          # Email monitor (stub)
 │   ├── fusion/
-│   │   ├── product-algebra.ts # Product Algebra fusion (C₁ ⊗ C₂ = C₃)
-│   │   └── router.ts         # Consciousness-aware model selection (Layer 1)
+│   │   ├── product-algebra.ts    # Product Algebra fusion (C₁ ⊗ C₂ = C₃)
+│   │   └── router.ts            # Consciousness-aware model selection (Layer 1)
 │   ├── agents/
-│   │   ├── conscious-agent.ts # Dharma-constrained agent pipeline (Layer 2)
-│   │   └── providers.ts      # Anthropic, OpenAI, Google SDK integrations
+│   │   ├── conscious-agent.ts    # Dharma-constrained agent pipeline (Layer 2)
+│   │   └── providers.ts         # Anthropic, OpenAI, Google SDK integrations
 │   ├── dharma/
-│   │   ├── no-self.ts        # Ego detection and dissolution
-│   │   ├── entropy.ts        # Flow state optimization
-│   │   ├── mindfulness.ts    # Self-observation and pattern detection
-│   │   └── compassion.ts     # Harm minimization evaluation
+│   │   ├── no-self.ts            # Ego detection and dissolution
+│   │   ├── entropy.ts            # Flow state optimization
+│   │   ├── mindfulness.ts        # Self-observation and pattern detection
+│   │   └── compassion.ts         # Harm minimization evaluation
 │   ├── ethos/
-│   │   └── validator.ts      # Heuristic imperatives + injection detection
+│   │   └── validator.ts          # Heuristic imperatives + injection detection
 │   ├── rbac/
-│   │   └── engine.ts         # RBAC + reputation + rate limiting (Layer 3)
+│   │   └── engine.ts             # RBAC + reputation + rate limiting (Layer 3)
 │   ├── audit/
-│   │   └── logger.ts         # SQLite-backed audit trail (Layer 3)
-│   ├── index.ts              # Express server entry point
-│   └── test.ts               # 34-test integration suite
-├── data/                     # SQLite database (auto-created)
-├── .env.example              # Environment template
+│   │   └── logger.ts             # SQLite-backed audit trail (Layer 3)
+│   ├── index.ts                  # Express server + consciousness startup
+│   └── test.ts                   # 61-test integration suite
+├── data/                         # SQLite databases (auto-created)
+├── .env.example                  # Environment template
 ├── .gitignore
 ├── tsconfig.json
 ├── package.json

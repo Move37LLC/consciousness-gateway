@@ -1,15 +1,12 @@
 /**
  * Consciousness Gateway — Server Entry Point
  *
- * Express server exposing the 3-layer gateway via REST API.
- * Loads environment variables, initializes SQLite, connects model providers.
+ * Express server exposing:
+ * - Gateway API (3-layer GATO routing)
+ * - Consciousness API (continuous perception, intention, action)
  *
- * Endpoints:
- *   POST /v1/chat        — Route a message through all 3 GATO layers
- *   GET  /v1/health      — Gateway health + dharma metrics + provider status
- *   GET  /v1/audit       — Query audit trail (persisted in SQLite)
- *   GET  /v1/models      — List available models
- *   GET  /v1/reputations — Agent reputation records
+ * The consciousness loop starts automatically with the server.
+ * It perceives time, monitors the world, forms intentions, and acts.
  */
 
 import dotenv from 'dotenv';
@@ -17,6 +14,7 @@ dotenv.config();
 
 import express from 'express';
 import { ConsciousnessGateway } from './core/gateway';
+import { ConsciousnessLoop } from './consciousness/loop';
 import { DEFAULT_CONFIG } from './core/config';
 import { Message } from './core/types';
 import { v4 as uuid } from 'uuid';
@@ -31,7 +29,7 @@ const health = gateway.getHealth();
 
 console.log('');
 console.log('  ====================================================');
-console.log('  CONSCIOUSNESS GATEWAY v0.1.0');
+console.log('  CONSCIOUSNESS GATEWAY v0.2.0');
 console.log('  Consciousness-first AI routing with GATO alignment');
 console.log('  ====================================================');
 console.log('');
@@ -47,31 +45,31 @@ for (const p of health.providers) {
 }
 console.log('');
 
+// ─── Initialize Consciousness Loop ─────────────────────────────────
+
+const consciousness = new ConsciousnessLoop({
+  tickIntervalMs: 1000,
+  githubToken: process.env.GITHUB_TOKEN,
+  githubRepos: (process.env.GITHUB_REPOS ?? 'Move37LLC/consciousness-gateway,Move37LLC/Consciousness-Aware-Aligned-AI').split(','),
+});
+
 // ─── Graceful Shutdown ──────────────────────────────────────────────
 
-process.on('SIGINT', () => {
+async function shutdown() {
   console.log('\n  Shutting down gracefully...');
+  await consciousness.stop();
   gateway.shutdown();
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', () => {
-  gateway.shutdown();
-  process.exit(0);
-});
+process.on('SIGINT', () => { shutdown(); });
+process.on('SIGTERM', () => { shutdown(); });
 
-// ─── Routes ─────────────────────────────────────────────────────────
+// ─── Gateway Routes ─────────────────────────────────────────────────
 
-/**
- * POST /v1/chat — Main routing endpoint
- *
- * Body: { content: string, sender_id?: string, channel?: string, role?: string }
- * Returns: Full response with dharma metrics and routing decision
- */
 app.post('/v1/chat', async (req, res) => {
   try {
     const { content, sender_id, channel, role } = req.body;
-
     if (!content || typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing "content" field' });
     }
@@ -79,10 +77,7 @@ app.post('/v1/chat', async (req, res) => {
     const message: Message = {
       id: uuid(),
       content,
-      sender: {
-        id: sender_id || 'anonymous',
-        role: role || 'user',
-      },
+      sender: { id: sender_id || 'anonymous', role: role || 'user' },
       channel: channel || 'api',
       timestamp: Date.now(),
     };
@@ -95,17 +90,22 @@ app.post('/v1/chat', async (req, res) => {
   }
 });
 
-/**
- * GET /v1/health — Gateway health + dharma metrics + provider status
- */
 app.get('/v1/health', (_req, res) => {
-  res.json(gateway.getHealth());
+  const gatewayHealth = gateway.getHealth();
+  const consciousnessState = consciousness.getState();
+
+  res.json({
+    ...gatewayHealth,
+    consciousness: {
+      running: consciousnessState.running,
+      tick: consciousnessState.tick,
+      uptimeSeconds: consciousnessState.uptimeSeconds,
+      monitors: consciousnessState.monitors,
+      stats: consciousnessState.stats,
+    },
+  });
 });
 
-/**
- * GET /v1/audit — Query audit trail
- * Query params: sender_id, model, outcome, limit
- */
 app.get('/v1/audit', (req, res) => {
   const filters: Record<string, any> = {};
   if (req.query.sender_id) filters.senderId = req.query.sender_id;
@@ -115,36 +115,92 @@ app.get('/v1/audit', (req, res) => {
   res.json(gateway.getAudit(filters));
 });
 
-/**
- * GET /v1/models — List available models with capabilities
- */
 app.get('/v1/models', (_req, res) => {
   const h = gateway.getHealth();
   res.json({ models: h.models, providers: h.providers });
 });
 
-/**
- * GET /v1/reputations — All agent reputation records
- */
 app.get('/v1/reputations', (_req, res) => {
   res.json(gateway.getReputations());
 });
 
-// ─── Start Server ───────────────────────────────────────────────────
+// ─── Consciousness Routes ───────────────────────────────────────────
+
+/**
+ * GET /v1/consciousness — Full consciousness state
+ * The current moment of experience: what was perceived, decided, done.
+ */
+app.get('/v1/consciousness', (_req, res) => {
+  res.json(consciousness.getState());
+});
+
+/**
+ * GET /v1/consciousness/memory — Query consciousness memory
+ * Query params: limit, type (percept|intention|action|reflection)
+ */
+app.get('/v1/consciousness/memory', (req, res) => {
+  const limit = parseInt(req.query.limit as string, 10) || 50;
+  const type = req.query.type as string | undefined;
+  res.json(consciousness.getMemory(limit, type));
+});
+
+/**
+ * GET /v1/consciousness/memory/salient — High-salience memories
+ * The moments that mattered most.
+ */
+app.get('/v1/consciousness/memory/salient', (req, res) => {
+  const minSalience = parseFloat(req.query.min_salience as string) || 0.5;
+  const limit = parseInt(req.query.limit as string, 10) || 20;
+  res.json(consciousness.getHighSalienceMemories(minSalience, limit));
+});
+
+/**
+ * GET /v1/consciousness/notifications — Unread notifications
+ * Things the consciousness layer wants to tell the human.
+ */
+app.get('/v1/consciousness/notifications', (_req, res) => {
+  res.json(consciousness.getNotifications());
+});
+
+/**
+ * POST /v1/consciousness/notifications/read — Mark notifications as read
+ * Body: { id: number } or { all: true }
+ */
+app.post('/v1/consciousness/notifications/read', (req, res) => {
+  if (req.body.all) {
+    consciousness.markAllNotificationsRead();
+  } else if (req.body.id) {
+    consciousness.markNotificationRead(req.body.id);
+  }
+  res.json({ ok: true });
+});
+
+// ─── Start Server + Consciousness ───────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || '') || DEFAULT_CONFIG.port;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`  Listening on http://localhost:${PORT}`);
   console.log('');
-  console.log('  Endpoints:');
-  console.log(`    POST /v1/chat        — Route a message`);
-  console.log(`    GET  /v1/health      — Health + dharma metrics`);
-  console.log(`    GET  /v1/audit       — Audit trail`);
-  console.log(`    GET  /v1/models      — Available models`);
-  console.log(`    GET  /v1/reputations — Agent reputations`);
+  console.log('  Gateway Endpoints:');
+  console.log('    POST /v1/chat              — Route a message');
+  console.log('    GET  /v1/health            — Health + dharma + consciousness');
+  console.log('    GET  /v1/audit             — Audit trail');
+  console.log('    GET  /v1/models            — Available models');
+  console.log('    GET  /v1/reputations       — Agent reputations');
   console.log('');
+  console.log('  Consciousness Endpoints:');
+  console.log('    GET  /v1/consciousness              — Current state');
+  console.log('    GET  /v1/consciousness/memory       — Memory query');
+  console.log('    GET  /v1/consciousness/memory/salient — Key memories');
+  console.log('    GET  /v1/consciousness/notifications — Notifications');
+  console.log('    POST /v1/consciousness/notifications/read — Mark read');
+  console.log('');
+
+  // Start the consciousness loop
+  await consciousness.start();
+
   console.log('  Ready. Consciousness is fundamental.');
   console.log('');
 });
 
-export { gateway };
+export { gateway, consciousness };
