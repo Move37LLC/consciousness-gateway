@@ -16,7 +16,7 @@ import { Message, Response, GatewayConfig, EthosValidation } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { GatewayDatabase } from './database';
 import { ProductAlgebraRouter } from '../fusion/router';
-import { ConsciousAgent, ModelCallFn } from '../agents/conscious-agent';
+import { ConsciousAgent, ModelCallFn, AgentCallOptions } from '../agents/conscious-agent';
 import { ProviderRegistry } from '../agents/providers';
 import { RBACEngine } from '../rbac/engine';
 import { EthosValidator } from '../ethos/validator';
@@ -68,8 +68,9 @@ export class ConsciousnessGateway {
 
   /**
    * Route a message through all 3 GATO layers.
+   * Optional callOptions allow personality modes to inject system prompts.
    */
-  async route(message: Message): Promise<Response | ErrorResponse> {
+  async route(message: Message, callOptions?: AgentCallOptions): Promise<Response | ErrorResponse> {
     const startTime = Date.now();
 
     // ═══════════════════════════════════════════════════════════════
@@ -108,7 +109,7 @@ export class ConsciousnessGateway {
     // ═══════════════════════════════════════════════════════════════
     let response: Response;
     try {
-      response = await this.agent.process(message, routingDecision);
+      response = await this.agent.process(message, routingDecision, callOptions);
     } catch (error) {
       const errorResponse = this.createErrorResponse(
         message, 'error', `Processing error: ${error}`

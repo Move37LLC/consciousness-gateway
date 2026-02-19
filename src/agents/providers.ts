@@ -286,10 +286,11 @@ export class ProviderRegistry {
 
   /**
    * Create a ModelCallFn compatible with ConsciousAgent.
+   * Passes through system prompt and temperature when provided.
    */
-  createModelCallFn(): (model: string, prompt: string) => Promise<string> {
-    return async (model: string, prompt: string): Promise<string> => {
-      const result = await this.call(model, prompt);
+  createModelCallFn(): (model: string, prompt: string, options?: { systemPrompt?: string; temperature?: number }) => Promise<string> {
+    return async (model: string, prompt: string, options?: { systemPrompt?: string; temperature?: number }): Promise<string> => {
+      const result = await this.call(model, prompt, options);
       return result.content;
     };
   }

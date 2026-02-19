@@ -22,6 +22,7 @@ import { TelegramChannel, TelegramConfig } from './channels/telegram';
 import { DEFAULT_CONFIG } from './core/config';
 import { Message } from './core/types';
 import { v4 as uuid } from 'uuid';
+import { VoiceId, VOICES, buildPersonalityContext } from './personalities/voices';
 
 const app = express();
 app.use(express.json());
@@ -98,7 +99,7 @@ process.on('SIGTERM', () => { shutdown(); });
 
 app.post('/v1/chat', async (req, res) => {
   try {
-    const { content, sender_id, channel, role } = req.body;
+    const { content, sender_id, channel, role, personality } = req.body;
     if (!content || typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing "content" field' });
     }
@@ -109,9 +110,17 @@ app.post('/v1/chat', async (req, res) => {
       sender: { id: sender_id || 'anonymous', role: role || 'user' },
       channel: channel || 'api',
       timestamp: Date.now(),
+      metadata: personality ? { personality } : undefined,
     };
 
-    const response = await gateway.route(message);
+    // Build personality context if a voice was requested
+    let callOptions;
+    if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
+      const ctx = buildPersonalityContext(personality as VoiceId, consciousness);
+      callOptions = { systemPrompt: ctx.systemPrompt, temperature: ctx.temperature };
+    }
+
+    const response = await gateway.route(message, callOptions);
     return res.json(response);
   } catch (error) {
     console.error('Route error:', error);
@@ -151,6 +160,17 @@ app.get('/v1/models', (_req, res) => {
 
 app.get('/v1/reputations', (_req, res) => {
   res.json(gateway.getReputations());
+});
+
+app.get('/v1/voices', (_req, res) => {
+  const voices = Object.values(VOICES).map(v => ({
+    id: v.id,
+    name: v.name,
+    emoji: v.emoji,
+    description: v.description,
+    preferredModel: v.preferredModel,
+  }));
+  res.json({ voices });
 });
 
 // ─── Consciousness Routes ───────────────────────────────────────────
@@ -229,6 +249,7 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/health            — Health + dharma + consciousness');
   console.log('    GET  /v1/audit             — Audit trail');
   console.log('    GET  /v1/models            — Available models');
+  console.log('    GET  /v1/voices            — Personality voices');
   console.log('    GET  /v1/reputations       — Agent reputations');
   console.log('');
   console.log('  Consciousness Endpoints:');

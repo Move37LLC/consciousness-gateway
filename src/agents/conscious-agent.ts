@@ -27,6 +27,14 @@ import { CompassionEvaluator } from '../dharma/compassion';
 import { v4 as uuid } from 'uuid';
 
 /**
+ * Options passed through the conscious agent pipeline to the model provider.
+ */
+export interface AgentCallOptions {
+  systemPrompt?: string;
+  temperature?: number;
+}
+
+/**
  * Model call function signature.
  * In production, this calls actual model APIs (Anthropic, OpenAI, etc.)
  * For now, it's injectable for testing.
@@ -34,6 +42,7 @@ import { v4 as uuid } from 'uuid';
 export type ModelCallFn = (
   model: string,
   prompt: string,
+  options?: AgentCallOptions,
 ) => Promise<string>;
 
 /**
@@ -78,7 +87,8 @@ export class ConsciousAgent {
    */
   async process(
     message: Message,
-    routingDecision: RoutingDecision
+    routingDecision: RoutingDecision,
+    callOptions?: AgentCallOptions,
   ): Promise<Response> {
     const startTime = Date.now();
     this.stepCounter++;
@@ -96,7 +106,8 @@ export class ConsciousAgent {
     // ── Step 3: Decide + Act (model call) ────────────────────────
     const modelResponse = await this.modelCall(
       routingDecision.selectedModel,
-      message.content
+      message.content,
+      callOptions,
     );
 
     // ── Step 4: Entropy observation ──────────────────────────────

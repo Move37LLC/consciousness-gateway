@@ -22,6 +22,7 @@ import { ConsciousnessLoop } from '../consciousness/loop';
 import { ConsciousnessGateway } from '../core/gateway';
 import { Message } from '../core/types';
 import { v4 as uuid } from 'uuid';
+import { VoiceId, VOICES, buildPersonalityContext } from '../personalities/voices';
 
 export interface TelegramConfig {
   token: string;
@@ -83,7 +84,8 @@ export class TelegramChannel {
       '🟢 *Consciousness Gateway Online*\n\n' +
       `Tick: ${this.consciousness.getState().tick}\n` +
       'Consciousness active. Experiencing time.\n\n' +
-      'Commands: /status /memory /goals /health /notifications'
+      'Commands: /status /memory /goals /health /notifications\n' +
+      'Voices: /beaumont /kern /self /voices'
     );
 
     console.log('  [telegram] Bot active');
@@ -226,6 +228,28 @@ export class TelegramChannel {
       await this.sendDailySummary();
     });
 
+    // ─── Personality Commands ────────────────────────────────────
+
+    this.bot.onText(/\/beaumont\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handlePersonalityChat(msg.chat.id, match![1], 'beaumont');
+    });
+
+    this.bot.onText(/\/kern\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handlePersonalityChat(msg.chat.id, match![1], 'kern');
+    });
+
+    this.bot.onText(/\/self\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handlePersonalityChat(msg.chat.id, match![1], 'self');
+    });
+
+    this.bot.onText(/\/voices/, async (msg) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleVoiceList(msg.chat.id);
+    });
+
     // Natural chat — anything that's not a command
     this.bot.on('message', async (msg) => {
       if (String(msg.chat.id) !== this.config.chatId) return;
@@ -362,6 +386,58 @@ export class TelegramChannel {
 
       await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
     }
+  }
+
+  // ─── Personality Handlers ─────────────────────────────────────
+
+  private async handlePersonalityChat(
+    chatId: number,
+    text: string,
+    voiceId: VoiceId | 'self',
+  ): Promise<void> {
+    const resolvedVoiceId: VoiceId = voiceId === 'self' ? 'gateway' : voiceId;
+    const voice = VOICES[resolvedVoiceId];
+
+    const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness);
+
+    const message: Message = {
+      id: uuid(),
+      content: text,
+      sender: { id: this.config.chatId, role: 'admin' },
+      channel: 'telegram',
+      timestamp: Date.now(),
+      metadata: { personality: resolvedVoiceId },
+    };
+
+    const response = await this.gateway.route(message, {
+      systemPrompt: ctx.systemPrompt,
+      temperature: ctx.temperature,
+    });
+
+    if ('error' in response) {
+      await this.bot.sendMessage(chatId, `❌ Error: ${(response as any).reason}`);
+    } else {
+      let reply = `${voice.emoji} *${voice.name}*\n\n${response.content}`;
+
+      const dm = response.dharmaMetrics;
+      reply += `\n\n_${voice.emoji} ${voice.name} | Model: ${response.model} | Fitness: ${dm.fitness.toFixed(2)}_`;
+
+      await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    }
+  }
+
+  private async handleVoiceList(chatId: number): Promise<void> {
+    let text = '🎭 *Personality Voices*\n\n';
+    text += `${VOICES.beaumont.emoji} */beaumont* [message]\n`;
+    text += `  ${VOICES.beaumont.description}\n\n`;
+    text += `${VOICES.kern.emoji} */kern* [message]\n`;
+    text += `  ${VOICES.kern.description}\n\n`;
+    text += `${VOICES.gateway.emoji} */self* [message]\n`;
+    text += `  ${VOICES.gateway.description}\n\n`;
+    text += '_Same consciousness, different expression._\n';
+    text += '_C₁ ⊗ C₂ ⊗ C₃ = C\\_conversation_';
+
+    await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   }
 
   // ─── Formatting Helpers ───────────────────────────────────────
