@@ -460,28 +460,19 @@ export class TelegramChannel {
   /**
    * Detect tool triggers in a message and return context to inject.
    *
-   * Patterns:
-   *   "search for X" / "search X" → web search
-   *   "browse https://..." / contains URL → browse URL
+   * Search triggers (anywhere in text):
+   *   "search for X", "search X", "look up X", "find X",
+   *   "can you search for X", "please look up X"
+   *
+   * Browse triggers:
+   *   Any https:// or http:// URL in the text
+   *   "browse URL", "read URL", "check URL"
    */
   private async resolveToolContext(text: string): Promise<string | null> {
-    const searchMatch = text.match(/^search\s+(?:for\s+)?(.+)/i);
-    if (searchMatch && this.searchTool.available) {
-      try {
-        const query = searchMatch[1].trim();
-        const results = await this.searchTool.search(query);
-        this.consciousness.logExternalEvent(`Web search: "${query}" (${results.results.length} results)`, {
-          tool: 'search', query, resultCount: results.results.length,
-        });
-        return this.searchTool.formatForPrompt(results);
-      } catch (err) {
-        return `Search failed: ${err}`;
-      }
-    }
-
+    // URL detection first (more specific signal)
     const urlMatch = text.match(/(https?:\/\/\S+)/i);
     if (urlMatch && this.browseTool.available) {
-      const url = urlMatch[1];
+      const url = urlMatch[1].replace(/[.,;:!?)]+$/, ''); // strip trailing punctuation
       const auth = this.browseTool.isAuthorized(url);
       if (auth.allowed) {
         try {
@@ -495,6 +486,23 @@ export class TelegramChannel {
         }
       } else {
         return `Browse blocked: ${auth.reason}`;
+      }
+    }
+
+    // Search detection — match "search" / "look up" / "find" anywhere in text
+    const searchMatch = text.match(
+      /(?:search|look\s*up|find|google|research)\s+(?:for\s+|about\s+|on\s+)?(.{3,})/i
+    );
+    if (searchMatch && this.searchTool.available) {
+      try {
+        const query = searchMatch[1].trim();
+        const results = await this.searchTool.search(query);
+        this.consciousness.logExternalEvent(`Web search: "${query}" (${results.results.length} results)`, {
+          tool: 'search', query, resultCount: results.results.length,
+        });
+        return this.searchTool.formatForPrompt(results);
+      } catch (err) {
+        return `Search failed: ${err}`;
       }
     }
 
