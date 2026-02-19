@@ -27,6 +27,7 @@ import { WebSearchTool } from './tools/search';
 import { WebBrowseTool } from './tools/browse';
 import { DocumentStore } from './documents/store';
 import { VALID_PROJECTS, ProjectId } from './documents/types';
+import { ToolExecutor } from './tools/executor';
 import multer from 'multer';
 
 const app = express();
@@ -46,6 +47,7 @@ const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
 const searchTool = new WebSearchTool();
 const browseTool = new WebBrowseTool();
 const documentStore = new DocumentStore();
+const toolExecutor = new ToolExecutor(searchTool, browseTool);
 const health = gateway.getHealth();
 
 console.log('');
@@ -135,6 +137,7 @@ app.post('/v1/chat', async (req, res) => {
 
     // Build call options with optional personality context and conversation history
     let callOptions: import('./agents/conscious-agent').AgentCallOptions = {};
+    let systemPromptParts: string[] = [];
 
     if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
       const ctx = buildPersonalityContext(personality as VoiceId, consciousness, {
@@ -142,13 +145,14 @@ app.post('/v1/chat', async (req, res) => {
       });
       callOptions.systemPrompt = ctx.systemPrompt;
       callOptions.temperature = ctx.temperature;
+      systemPromptParts.push(ctx.systemPrompt);
     }
 
     // Load documents for non-personality chat too
     const loadDocs = documentProject !== 'none';
     let loadedDocs: Array<{ id: string; filename: string; project: string }> = [];
 
-    if (loadDocs && !callOptions.systemPrompt) {
+    if (loadDocs && !personality) {
       const filter = typeof documentProject === 'string' && documentProject !== 'all'
         ? { project: documentProject }
         : undefined;
@@ -165,7 +169,7 @@ app.post('/v1/chat', async (req, res) => {
           return `--- ${d.filename} (${d.project}) ---\n${preview}\n---`;
         }).join('\n\n');
 
-        callOptions.systemPrompt = [
+        systemPromptParts.push([
           'You are a helpful, knowledgeable AI assistant for the Consciousness Gateway project.',
           'You have access to the following uploaded documents. Use them to answer questions accurately.',
           '',
@@ -173,12 +177,24 @@ app.post('/v1/chat', async (req, res) => {
           `${fullDocs.length} document(s) available:`,
           '',
           docSection,
-          '',
-          '─── INSTRUCTIONS ───',
-          'When the user asks about document content, reference the documents above.',
-          'If a question is not covered by the documents, say so and answer from general knowledge.',
-        ].join('\n');
+        ].join('\n'));
       }
+    }
+
+    // Append tool instructions to system prompt
+    const toolPrompt = toolExecutor.getToolSystemPrompt();
+    if (toolPrompt) {
+      systemPromptParts.push(toolPrompt);
+    }
+
+    // If no personality set the base prompt, build the full system prompt
+    if (!personality && systemPromptParts.length > 0) {
+      if (!systemPromptParts[0].startsWith('You are')) {
+        systemPromptParts.unshift('You are a helpful, knowledgeable AI assistant for the Consciousness Gateway project.');
+      }
+      callOptions.systemPrompt = systemPromptParts.join('\n\n');
+    } else if (personality && toolPrompt) {
+      callOptions.systemPrompt = (callOptions.systemPrompt || '') + '\n\n' + toolPrompt;
     }
 
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
@@ -187,12 +203,64 @@ app.post('/v1/chat', async (req, res) => {
         .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
     }
 
-    const hasOptions = callOptions.systemPrompt || callOptions.temperature || callOptions.conversationHistory;
-    const response = await gateway.route(message, hasOptions ? callOptions : undefined);
+    // Execute with tool loop
+    const toolExecution = await toolExecutor.execute(
+      async (prompt: string, sysPrompt?: string) => {
+        const routeMsg: Message = {
+          ...message,
+          id: uuid(),
+          content: prompt,
+        };
+        const opts = {
+          ...callOptions,
+          systemPrompt: sysPrompt || callOptions.systemPrompt,
+        };
+        const resp = await gateway.route(routeMsg, opts);
+        if ('error' in resp) throw new Error((resp as any).reason);
+        return resp.content;
+      },
+      content,
+      callOptions.systemPrompt || '',
+    );
+
+    // Do the final route through gateway to get full response object with metrics
+    const finalMessage: Message = {
+      ...message,
+      id: uuid(),
+      content: toolExecution.toolsUsed.length > 0
+        ? toolExecution.finalContent
+        : content,
+    };
+
+    // If tools were used, the finalContent is already the synthesized response.
+    // Route through gateway for metrics, but use a simple pass-through prompt.
+    let response;
+    if (toolExecution.toolsUsed.length > 0) {
+      // We already have the final content from the tool loop — wrap it
+      const wrapMsg: Message = { ...message, id: uuid(), content: `Respond with exactly this text, do not modify it:\n\n${toolExecution.finalContent}` };
+      response = await gateway.route(wrapMsg, callOptions);
+      if (!('error' in response)) {
+        response = { ...response, content: toolExecution.finalContent };
+      }
+    } else {
+      const hasOptions = callOptions.systemPrompt || callOptions.temperature || callOptions.conversationHistory;
+      response = await gateway.route(message, hasOptions ? callOptions : undefined);
+    }
+
+    // Log tool usage to consciousness
+    if (toolExecution.toolsUsed.length > 0) {
+      consciousness.logExternalEvent(
+        `Chat used ${toolExecution.toolsUsed.length} tool(s): ${toolExecution.toolsUsed.map(t => t.type).join(', ')}`,
+        { tools: toolExecution.toolsUsed.map(t => ({ type: t.type, query: t.query, url: t.url })) },
+      );
+    }
 
     const enrichedResponse = {
       ...response,
       loadedDocuments: loadedDocs.length > 0 ? loadedDocs : undefined,
+      toolsUsed: toolExecution.toolsUsed.length > 0
+        ? toolExecution.toolsUsed.map(t => ({ type: t.type, query: t.query, url: t.url, timeTakenMs: t.timeTakenMs }))
+        : undefined,
     };
 
     return res.json(enrichedResponse);
@@ -298,6 +366,15 @@ app.post('/v1/tools/browse', async (req, res) => {
 
 app.get('/v1/tools/browse/whitelist', (_req, res) => {
   res.json({ domains: browseTool.getWhitelist() });
+});
+
+app.get('/v1/tools/status', (_req, res) => {
+  const toolStatus = toolExecutor.toolsAvailable;
+  res.json({
+    search: { available: toolStatus.search, provider: 'Brave Search' },
+    browse: { available: toolStatus.browse, provider: 'Grok/xAI' },
+    autonomous: toolStatus.search || toolStatus.browse,
+  });
 });
 
 // ─── Document Routes ────────────────────────────────────────────────

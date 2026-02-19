@@ -25,6 +25,7 @@ import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from '../personalities/voices';
 import { WebSearchTool } from '../tools/search';
 import { WebBrowseTool } from '../tools/browse';
+import { ToolExecutor } from '../tools/executor';
 import { DocumentStore } from '../documents/store';
 
 export interface TelegramConfig {
@@ -48,6 +49,7 @@ export class TelegramChannel {
   private running = false;
   private searchTool: WebSearchTool;
   private browseTool: WebBrowseTool;
+  private toolExecutor: ToolExecutor;
   private documents: DocumentStore | null;
 
   constructor(
@@ -64,6 +66,9 @@ export class TelegramChannel {
     this.bot = new TelegramBot(config.token, { polling: true });
     this.searchTool = new WebSearchTool();
     this.browseTool = new WebBrowseTool();
+    this.toolExecutor = new ToolExecutor(this.searchTool, this.browseTool, {
+      logEvent: (summary, data) => this.consciousness.logExternalEvent(summary, data),
+    });
   }
 
   async start(): Promise<void> {
@@ -429,99 +434,56 @@ export class TelegramChannel {
     const resolvedVoiceId: VoiceId = voiceId === 'self' ? 'gateway' : voiceId;
     const voice = VOICES[resolvedVoiceId];
 
-    // Detect tool triggers in personality messages
-    const toolContext = await this.resolveToolContext(text);
-
-    // Load relevant documents for this personality + message
     const relevantDocs = this.documents?.getRelevantDocuments(resolvedVoiceId, text, 3) ?? [];
 
     const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness, {
       documents: relevantDocs.length > 0 ? relevantDocs : undefined,
     });
 
-    // Inject tool results into the system prompt if tools were triggered
-    let systemPrompt = ctx.systemPrompt;
-    if (toolContext) {
-      systemPrompt += '\n\n─── TOOL RESULTS ───\n' + toolContext;
-    }
+    // Append tool instructions so the personality can autonomously use tools
+    const toolPrompt = this.toolExecutor.getToolSystemPrompt();
+    const systemPrompt = toolPrompt ? ctx.systemPrompt + '\n\n' + toolPrompt : ctx.systemPrompt;
 
-    const message: Message = {
-      id: uuid(),
-      content: text,
-      sender: { id: this.config.chatId, role: 'admin' },
-      channel: 'telegram',
-      timestamp: Date.now(),
-      metadata: { personality: resolvedVoiceId },
-    };
-
-    const response = await this.gateway.route(message, {
-      systemPrompt,
-      temperature: ctx.temperature,
-    });
-
-    if ('error' in response) {
-      await this.bot.sendMessage(chatId, `❌ Error: ${(response as any).reason}`);
-    } else {
-      let reply = `${voice.emoji} *${voice.name}*\n\n${response.content}`;
-
-      const dm = response.dharmaMetrics;
-      reply += `\n\n_${voice.emoji} ${voice.name} | Model: ${response.model} | Fitness: ${dm.fitness.toFixed(2)}_`;
-
-      await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
-    }
-  }
-
-  /**
-   * Detect tool triggers in a message and return context to inject.
-   *
-   * Search triggers (anywhere in text):
-   *   "search for X", "search X", "look up X", "find X",
-   *   "can you search for X", "please look up X"
-   *
-   * Browse triggers:
-   *   Any https:// or http:// URL in the text
-   *   "browse URL", "read URL", "check URL"
-   */
-  private async resolveToolContext(text: string): Promise<string | null> {
-    // URL detection first (more specific signal)
-    const urlMatch = text.match(/(https?:\/\/\S+)/i);
-    if (urlMatch && this.browseTool.available) {
-      const url = urlMatch[1].replace(/[.,;:!?)]+$/, ''); // strip trailing punctuation
-      const auth = this.browseTool.isAuthorized(url);
-      if (auth.allowed) {
-        try {
-          const result = await this.browseTool.browse(url, text);
-          this.consciousness.logExternalEvent(`Web browse: ${url} (${result.rawTextLength} chars)`, {
-            tool: 'browse', url, authorized: result.authorized, summarizedBy: result.summarizedBy,
-          });
-          return this.browseTool.formatForPrompt(result);
-        } catch (err) {
-          return `Browse failed: ${err}`;
-        }
-      } else {
-        return `Browse blocked: ${auth.reason}`;
-      }
-    }
-
-    // Search detection — match "search" / "look up" / "find" anywhere in text
-    const searchMatch = text.match(
-      /(?:search|look\s*up|find|google|research)\s+(?:for\s+|about\s+|on\s+)?(.{3,})/i
-    );
-    if (searchMatch && this.searchTool.available) {
-      try {
-        const query = searchMatch[1].trim();
-        const results = await this.searchTool.search(query);
-        this.consciousness.logExternalEvent(`Web search: "${query}" (${results.results.length} results)`, {
-          tool: 'search', query, resultCount: results.results.length,
+    // Run through tool executor loop
+    const toolResult = await this.toolExecutor.execute(
+      async (prompt: string, sysPrompt?: string) => {
+        const message: Message = {
+          id: uuid(),
+          content: prompt,
+          sender: { id: this.config.chatId, role: 'admin' },
+          channel: 'telegram',
+          timestamp: Date.now(),
+          metadata: { personality: resolvedVoiceId },
+        };
+        const resp = await this.gateway.route(message, {
+          systemPrompt: sysPrompt || systemPrompt,
+          temperature: ctx.temperature,
         });
-        return this.searchTool.formatForPrompt(results);
-      } catch (err) {
-        return `Search failed: ${err}`;
-      }
+        if ('error' in resp) throw new Error((resp as any).reason);
+        return resp.content;
+      },
+      text,
+      systemPrompt,
+    );
+
+    // Send tool activity indicators if tools were used
+    if (toolResult.toolsUsed.length > 0) {
+      const toolSummary = toolResult.toolsUsed.map(t =>
+        t.type === 'search' ? `🔍 Searched: "${t.query}"` : `🌐 Browsed: ${t.url}`
+      ).join('\n');
+      await this.bot.sendMessage(chatId, toolSummary);
     }
 
-    return null;
+    let reply = `${voice.emoji} *${voice.name}*\n\n${toolResult.finalContent}`;
+
+    const toolCount = toolResult.toolsUsed.length;
+    reply += `\n\n_${voice.emoji} ${voice.name}${toolCount > 0 ? ` | ${toolCount} tool(s)` : ''}_`;
+
+    await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
   }
+
+  // resolveToolContext replaced by ToolExecutor — autonomous tool calling
+  // now handled via [SEARCH:] and [BROWSE:] tags in model responses
 
   // ─── Tool Handlers ──────────────────────────────────────────
 
