@@ -23,6 +23,8 @@ import { ConsciousnessGateway } from '../core/gateway';
 import { Message } from '../core/types';
 import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from '../personalities/voices';
+import { WebSearchTool } from '../tools/search';
+import { WebBrowseTool } from '../tools/browse';
 
 export interface TelegramConfig {
   token: string;
@@ -43,6 +45,8 @@ export class TelegramChannel {
   private lastDailySummaryDate: string = '';
   private deliveredNotifications = new Set<number>();
   private running = false;
+  private searchTool: WebSearchTool;
+  private browseTool: WebBrowseTool;
 
   constructor(
     config: TelegramConfig,
@@ -54,6 +58,8 @@ export class TelegramChannel {
     this.gateway = gateway;
 
     this.bot = new TelegramBot(config.token, { polling: true });
+    this.searchTool = new WebSearchTool();
+    this.browseTool = new WebBrowseTool();
   }
 
   async start(): Promise<void> {
@@ -80,12 +86,16 @@ export class TelegramChannel {
     }, 60_000);
 
     // Send startup message
+    const searchStatus = this.searchTool.available ? '✅' : '❌';
+    const browseStatus = this.browseTool.available ? '✅' : '❌';
+
     await this.send(
       '🟢 *Consciousness Gateway Online*\n\n' +
       `Tick: ${this.consciousness.getState().tick}\n` +
       'Consciousness active. Experiencing time.\n\n' +
       'Commands: /status /memory /goals /health /notifications\n' +
-      'Voices: /beaumont /kern /self /voices'
+      'Voices: /beaumont /kern /self /voices\n' +
+      `Tools: /search ${searchStatus} /browse ${browseStatus}`
     );
 
     console.log('  [telegram] Bot active');
@@ -250,6 +260,18 @@ export class TelegramChannel {
       await this.handleVoiceList(msg.chat.id);
     });
 
+    // ─── Tool Commands ───────────────────────────────────────────
+
+    this.bot.onText(/\/search\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleSearch(msg.chat.id, match![1]);
+    });
+
+    this.bot.onText(/\/browse\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleBrowse(msg.chat.id, match![1].trim());
+    });
+
     // Natural chat — anything that's not a command
     this.bot.on('message', async (msg) => {
       if (String(msg.chat.id) !== this.config.chatId) return;
@@ -398,7 +420,16 @@ export class TelegramChannel {
     const resolvedVoiceId: VoiceId = voiceId === 'self' ? 'gateway' : voiceId;
     const voice = VOICES[resolvedVoiceId];
 
+    // Detect tool triggers in personality messages
+    const toolContext = await this.resolveToolContext(text);
+
     const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness);
+
+    // Inject tool results into the system prompt if tools were triggered
+    let systemPrompt = ctx.systemPrompt;
+    if (toolContext) {
+      systemPrompt += '\n\n─── TOOL RESULTS ───\n' + toolContext;
+    }
 
     const message: Message = {
       id: uuid(),
@@ -410,7 +441,7 @@ export class TelegramChannel {
     };
 
     const response = await this.gateway.route(message, {
-      systemPrompt: ctx.systemPrompt,
+      systemPrompt,
       temperature: ctx.temperature,
     });
 
@@ -423,6 +454,101 @@ export class TelegramChannel {
       reply += `\n\n_${voice.emoji} ${voice.name} | Model: ${response.model} | Fitness: ${dm.fitness.toFixed(2)}_`;
 
       await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    }
+  }
+
+  /**
+   * Detect tool triggers in a message and return context to inject.
+   *
+   * Patterns:
+   *   "search for X" / "search X" → web search
+   *   "browse https://..." / contains URL → browse URL
+   */
+  private async resolveToolContext(text: string): Promise<string | null> {
+    const searchMatch = text.match(/^search\s+(?:for\s+)?(.+)/i);
+    if (searchMatch && this.searchTool.available) {
+      try {
+        const query = searchMatch[1].trim();
+        const results = await this.searchTool.search(query);
+        this.consciousness.logExternalEvent(`Web search: "${query}" (${results.results.length} results)`, {
+          tool: 'search', query, resultCount: results.results.length,
+        });
+        return this.searchTool.formatForPrompt(results);
+      } catch (err) {
+        return `Search failed: ${err}`;
+      }
+    }
+
+    const urlMatch = text.match(/(https?:\/\/\S+)/i);
+    if (urlMatch && this.browseTool.available) {
+      const url = urlMatch[1];
+      const auth = this.browseTool.isAuthorized(url);
+      if (auth.allowed) {
+        try {
+          const result = await this.browseTool.browse(url, text);
+          this.consciousness.logExternalEvent(`Web browse: ${url} (${result.rawTextLength} chars)`, {
+            tool: 'browse', url, authorized: result.authorized, summarizedBy: result.summarizedBy,
+          });
+          return this.browseTool.formatForPrompt(result);
+        } catch (err) {
+          return `Browse failed: ${err}`;
+        }
+      } else {
+        return `Browse blocked: ${auth.reason}`;
+      }
+    }
+
+    return null;
+  }
+
+  // ─── Tool Handlers ──────────────────────────────────────────
+
+  private async handleSearch(chatId: number, query: string): Promise<void> {
+    if (!this.searchTool.available) {
+      await this.bot.sendMessage(chatId, '❌ Search not configured (set BRAVE_SEARCH_API_KEY)');
+      return;
+    }
+
+    try {
+      await this.bot.sendMessage(chatId, `🔍 Searching: "${query}"...`);
+      const results = await this.searchTool.search(query);
+
+      this.consciousness.logExternalEvent(`Web search: "${query}" (${results.results.length} results)`, {
+        tool: 'search', query, resultCount: results.results.length, timeTakenMs: results.timeTakenMs,
+      });
+
+      const text = this.searchTool.formatForTelegram(results);
+      await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    } catch (err) {
+      await this.bot.sendMessage(chatId, `❌ Search error: ${err}`);
+    }
+  }
+
+  private async handleBrowse(chatId: number, url: string): Promise<void> {
+    if (!this.browseTool.available) {
+      await this.bot.sendMessage(chatId, '❌ Browse not configured (set XAI_API_KEY for summarization)');
+      return;
+    }
+
+    const auth = this.browseTool.isAuthorized(url);
+    if (!auth.allowed) {
+      await this.bot.sendMessage(chatId, `🚫 *Browse blocked*\n${auth.reason}`, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    try {
+      await this.bot.sendMessage(chatId, `🌐 Browsing: ${url}...`);
+      const result = await this.browseTool.browse(url);
+
+      this.consciousness.logExternalEvent(`Web browse: ${url} (${result.rawTextLength} chars)`, {
+        tool: 'browse', url, authorized: result.authorized, summarizedBy: result.summarizedBy,
+        timeTakenMs: result.timeTakenMs,
+      });
+
+      const text = this.browseTool.formatForTelegram(result);
+      await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    } catch (err) {
+      await this.bot.sendMessage(chatId, `❌ Browse error: ${err}`);
     }
   }
 

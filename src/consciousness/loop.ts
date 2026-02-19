@@ -381,6 +381,15 @@ export class ConsciousnessLoop {
     return diag;
   }
 
+  /**
+   * Log an external event into consciousness memory.
+   * Used by tools (search, browse) and channels to record experiences
+   * that happen outside the normal tick cycle.
+   */
+  logExternalEvent(summary: string, data?: Record<string, unknown>): void {
+    this.memory.storeReflection(this.tick, summary, data);
+  }
+
   isRunning(): boolean {
     return this.running;
   }

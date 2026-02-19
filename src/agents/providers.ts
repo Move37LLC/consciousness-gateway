@@ -204,6 +204,64 @@ export class GoogleAIProvider implements ModelProviderInterface {
   }
 }
 
+// ─── xAI (Grok) Provider ─────────────────────────────────────────────
+
+export class XAIProvider implements ModelProviderInterface {
+  readonly name = 'xai';
+  private client: OpenAI | null = null;
+
+  get available(): boolean {
+    return !!process.env.XAI_API_KEY;
+  }
+
+  private getClient(): OpenAI {
+    if (!this.client) {
+      if (!process.env.XAI_API_KEY) {
+        throw new Error('XAI_API_KEY not set');
+      }
+      this.client = new OpenAI({
+        apiKey: process.env.XAI_API_KEY,
+        baseURL: 'https://api.x.ai/v1',
+      });
+    }
+    return this.client;
+  }
+
+  async call(model: string, prompt: string, options?: CallOptions): Promise<ProviderCallResult> {
+    const client = this.getClient();
+
+    const response = await client.chat.completions.create({
+      model: this.resolveModel(model),
+      max_tokens: options?.maxTokens ?? 1024,
+      temperature: options?.temperature ?? 0.7,
+      messages: [
+        { role: 'system', content: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ],
+    });
+
+    const choice = response.choices[0];
+
+    return {
+      content: choice?.message?.content ?? '',
+      model: response.model,
+      inputTokens: response.usage?.prompt_tokens,
+      outputTokens: response.usage?.completion_tokens,
+      finishReason: choice?.finish_reason ?? undefined,
+    };
+  }
+
+  private resolveModel(model: string): string {
+    const mapping: Record<string, string> = {
+      'grok-4': 'grok-4',
+      'grok-4-fast': 'grok-4-1-fast-non-reasoning',
+      'grok-3': 'grok-3',
+      'grok-3-mini': 'grok-3-mini',
+    };
+    return mapping[model] ?? model;
+  }
+}
+
 // ─── Fallback Provider (no API key needed) ──────────────────────────
 
 export class FallbackProvider implements ModelProviderInterface {
@@ -234,6 +292,7 @@ export class ProviderRegistry {
     this.register(new AnthropicProvider());
     this.register(new OpenAIProvider());
     this.register(new GoogleAIProvider());
+    this.register(new XAIProvider());
   }
 
   private register(provider: ModelProviderInterface): void {
@@ -254,6 +313,10 @@ export class ProviderRegistry {
     }
     if (modelId.startsWith('gemini')) {
       const p = this.providers.get('google');
+      if (p?.available) return p;
+    }
+    if (modelId.startsWith('grok')) {
+      const p = this.providers.get('xai');
       if (p?.available) return p;
     }
     return this.fallback;

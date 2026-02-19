@@ -23,6 +23,8 @@ import { DEFAULT_CONFIG } from './core/config';
 import { Message } from './core/types';
 import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from './personalities/voices';
+import { WebSearchTool } from './tools/search';
+import { WebBrowseTool } from './tools/browse';
 
 const app = express();
 app.use(express.json());
@@ -33,6 +35,8 @@ app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
 // ─── Initialize Gateway ─────────────────────────────────────────────
 
 const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
+const searchTool = new WebSearchTool();
+const browseTool = new WebBrowseTool();
 const health = gateway.getHealth();
 
 console.log('');
@@ -51,6 +55,10 @@ for (const p of health.providers) {
   const status = p.available ? 'ready' : 'no key';
   console.log(`    ${p.name.padEnd(12)} ${status}`);
 }
+console.log('');
+console.log('  Tools:');
+console.log(`    search       ${searchTool.available ? 'ready (Brave)' : 'no key'}`);
+console.log(`    browse       ${browseTool.available ? 'ready (Grok)' : 'no key'}`);
 console.log('');
 
 // ─── Initialize Consciousness Loop ─────────────────────────────────
@@ -173,6 +181,59 @@ app.get('/v1/voices', (_req, res) => {
   res.json({ voices });
 });
 
+// ─── Tool Routes ────────────────────────────────────────────────────
+
+app.post('/v1/tools/search', async (req, res) => {
+  try {
+    const { query, count } = req.body;
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'Missing "query" field' });
+    }
+    if (!searchTool.available) {
+      return res.status(503).json({ error: 'Search not configured (set BRAVE_SEARCH_API_KEY)' });
+    }
+
+    const results = await searchTool.search(query, count);
+    consciousness.logExternalEvent(`API search: "${query}" (${results.results.length} results)`, {
+      tool: 'search', query, resultCount: results.results.length,
+    });
+    return res.json(results);
+  } catch (error) {
+    console.error('Search error:', error);
+    return res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+app.post('/v1/tools/browse', async (req, res) => {
+  try {
+    const { url, context } = req.body;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Missing "url" field' });
+    }
+    if (!browseTool.available) {
+      return res.status(503).json({ error: 'Browse not configured (set XAI_API_KEY)' });
+    }
+
+    const auth = browseTool.isAuthorized(url);
+    if (!auth.allowed) {
+      return res.status(403).json({ error: auth.reason, domain: auth.domain });
+    }
+
+    const result = await browseTool.browse(url, context);
+    consciousness.logExternalEvent(`API browse: ${url} (${result.rawTextLength} chars)`, {
+      tool: 'browse', url, authorized: result.authorized, summarizedBy: result.summarizedBy,
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error('Browse error:', error);
+    return res.status(500).json({ error: 'Browse failed' });
+  }
+});
+
+app.get('/v1/tools/browse/whitelist', (_req, res) => {
+  res.json({ domains: browseTool.getWhitelist() });
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -251,6 +312,11 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/models            — Available models');
   console.log('    GET  /v1/voices            — Personality voices');
   console.log('    GET  /v1/reputations       — Agent reputations');
+  console.log('');
+  console.log('  Tool Endpoints:');
+  console.log('    POST /v1/tools/search          — Web search (Brave)');
+  console.log('    POST /v1/tools/browse           — Browse + summarize (Grok)');
+  console.log('    GET  /v1/tools/browse/whitelist  — Allowed domains');
   console.log('');
   console.log('  Consciousness Endpoints:');
   console.log('    GET  /v1/consciousness              — Current state');
