@@ -241,13 +241,13 @@ export class WebBrowseTool {
    */
   formatForTelegram(result: BrowseResult): string {
     if (!result.authorized) {
-      return `🚫 *Browse Blocked*\n${result.summary}`;
+      return `🚫 *Browse Blocked*\n${escapeMd(result.summary)}`;
     }
 
-    let text = `🌐 *Browse: ${result.title || result.url}*\n`;
-    text += `_${result.url}_\n`;
-    text += `_${result.rawTextLength} chars → summarized by ${result.summarizedBy} in ${result.timeTakenMs}ms_\n\n`;
-    text += result.summary;
+    let text = `🌐 *Browse: ${escapeMd(result.title || result.url)}*\n`;
+    text += `_${escapeMd(result.url)}_\n`;
+    text += `_${result.rawTextLength} chars → summarized by ${escapeMd(result.summarizedBy)} in ${result.timeTakenMs}ms_\n\n`;
+    text += escapeMd(result.summary);
 
     return text;
   }
@@ -258,6 +258,10 @@ export class WebBrowseTool {
   getWhitelist(): string[] {
     return [...this.config.domainWhitelist];
   }
+}
+
+function escapeMd(text: string): string {
+  return text.replace(/([_*\[\]()~`>#+=|{}.!-])/g, '\\$1');
 }
 
 // ─── HTML Text Extraction ────────────────────────────────────────────

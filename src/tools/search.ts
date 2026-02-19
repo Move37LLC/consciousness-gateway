@@ -112,18 +112,18 @@ export class WebSearchTool {
    */
   formatForTelegram(response: SearchResponse): string {
     if (response.results.length === 0) {
-      return `🔍 No results for "${response.query}"`;
+      return `🔍 No results for "${escapeMd(response.query)}"`;
     }
 
-    let text = `🔍 *Search: "${response.query}"*\n`;
+    let text = `🔍 *Search: "${escapeMd(response.query)}"*\n`;
     text += `_${response.results.length} results in ${response.timeTakenMs}ms_\n\n`;
 
     for (let i = 0; i < response.results.length; i++) {
       const r = response.results[i];
-      text += `*${i + 1}. ${escapeMd(r.title)}*\n`;
-      text += `${r.url}\n`;
+      text += `*${i + 1}\\. ${escapeMd(r.title)}*\n`;
+      text += `${escapeMd(r.url)}\n`;
       text += `${escapeMd(r.snippet)}\n`;
-      if (r.age) text += `_${r.age}_\n`;
+      if (r.age) text += `_${escapeMd(r.age)}_\n`;
       text += '\n';
     }
 
@@ -132,7 +132,7 @@ export class WebSearchTool {
 }
 
 function escapeMd(text: string): string {
-  return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+  return text.replace(/([_*\[\]()~`>#+=|{}.!-])/g, '\\$1');
 }
 
 // ─── Brave API Response Types ────────────────────────────────────────
