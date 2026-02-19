@@ -119,7 +119,7 @@ process.on('SIGTERM', () => { shutdown(); });
 
 app.post('/v1/chat', async (req, res) => {
   try {
-    const { content, sender_id, channel, role, personality, conversationHistory } = req.body;
+    const { content, sender_id, channel, role, personality, conversationHistory, documentProject } = req.body;
     if (!content || typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing "content" field' });
     }
@@ -137,9 +137,48 @@ app.post('/v1/chat', async (req, res) => {
     let callOptions: import('./agents/conscious-agent').AgentCallOptions = {};
 
     if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
-      const ctx = buildPersonalityContext(personality as VoiceId, consciousness);
+      const ctx = buildPersonalityContext(personality as VoiceId, consciousness, {
+        documents: documentStore.getRelevantDocuments(personality, content, 5),
+      });
       callOptions.systemPrompt = ctx.systemPrompt;
       callOptions.temperature = ctx.temperature;
+    }
+
+    // Load documents for non-personality chat too
+    const loadDocs = documentProject !== 'none';
+    let loadedDocs: Array<{ id: string; filename: string; project: string }> = [];
+
+    if (loadDocs && !callOptions.systemPrompt) {
+      const filter = typeof documentProject === 'string' && documentProject !== 'all'
+        ? { project: documentProject }
+        : undefined;
+      const docs = documentStore.list(filter);
+      const fullDocs = docs.slice(0, 5).map(d => documentStore.getById(d.id)).filter(Boolean) as import('./documents/types').Document[];
+
+      if (fullDocs.length > 0) {
+        loadedDocs = fullDocs.map(d => ({ id: d.id, filename: d.filename, project: d.project }));
+
+        const docSection = fullDocs.map(d => {
+          const preview = d.content.length > 4000
+            ? d.content.slice(0, 4000) + '\n[... truncated ...]'
+            : d.content;
+          return `--- ${d.filename} (${d.project}) ---\n${preview}\n---`;
+        }).join('\n\n');
+
+        callOptions.systemPrompt = [
+          'You are a helpful, knowledgeable AI assistant for the Consciousness Gateway project.',
+          'You have access to the following uploaded documents. Use them to answer questions accurately.',
+          '',
+          '─── LOADED DOCUMENTS ───',
+          `${fullDocs.length} document(s) available:`,
+          '',
+          docSection,
+          '',
+          '─── INSTRUCTIONS ───',
+          'When the user asks about document content, reference the documents above.',
+          'If a question is not covered by the documents, say so and answer from general knowledge.',
+        ].join('\n');
+      }
     }
 
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
@@ -150,7 +189,13 @@ app.post('/v1/chat', async (req, res) => {
 
     const hasOptions = callOptions.systemPrompt || callOptions.temperature || callOptions.conversationHistory;
     const response = await gateway.route(message, hasOptions ? callOptions : undefined);
-    return res.json(response);
+
+    const enrichedResponse = {
+      ...response,
+      loadedDocuments: loadedDocs.length > 0 ? loadedDocs : undefined,
+    };
+
+    return res.json(enrichedResponse);
   } catch (error) {
     console.error('Route error:', error);
     return res.status(500).json({ error: 'Internal gateway error' });

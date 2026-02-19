@@ -423,7 +423,10 @@
       const [messages, setMessages] = useState([]);
       const [input, setInput] = useState('');
       const [loading, setLoading] = useState(false);
+      const [docProject, setDocProject] = useState('all');
+      const [lastLoadedDocs, setLastLoadedDocs] = useState(null);
       const textareaRef = useRef(null);
+      const messagesEndRef = useRef(null);
 
       const autoResize = useCallback(() => {
         const el = textareaRef.current;
@@ -434,6 +437,10 @@
         const maxHeight = lineHeight * 10;
         el.style.height = Math.min(Math.max(el.scrollHeight, minHeight), maxHeight) + 'px';
       }, []);
+
+      useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, [messages, loading]);
 
       const sendMessage = async () => {
         if (!input.trim() || loading) return;
@@ -448,10 +455,9 @@
         setMessages(updatedMessages);
         setLoading(true);
 
-        // Build conversation history from all prior user/assistant turns
         const conversationHistory = updatedMessages
           .filter(m => m.role === 'user' || m.role === 'assistant')
-          .slice(0, -1)  // Exclude the current message (sent as `content`)
+          .slice(0, -1)
           .map(m => ({ role: m.role, content: m.text }));
 
         const resp = await postApi('/v1/chat', {
@@ -459,11 +465,16 @@
           sender_id: 'dashboard',
           channel: 'web',
           conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+          documentProject: docProject,
         });
         setLoading(false);
 
         if (resp && !resp.error) {
-          setMessages(prev => [...prev, { role: 'assistant', text: resp.content, model: resp.model, fitness: resp.dharmaMetrics?.fitness }]);
+          setLastLoadedDocs(resp.loadedDocuments || null);
+          setMessages(prev => [...prev, {
+            role: 'assistant', text: resp.content, model: resp.model,
+            fitness: resp.dharmaMetrics?.fitness, docs: resp.loadedDocuments,
+          }]);
         } else {
           setMessages(prev => [...prev, { role: 'error', text: resp?.reason || 'Request failed' }]);
         }
@@ -478,15 +489,41 @@
 
       return (
         <Card title="Chat" icon="💬" className="col-span-full">
-          <div className="max-h-64 overflow-y-auto space-y-2 mb-3">
+          <div className="max-h-80 overflow-y-auto space-y-2 mb-3">
             {messages.length === 0 && <p className="text-gray-600 text-sm">Send a message through the GATO pipeline...</p>}
             {messages.map((m, i) => (
               <div key={i} className={`text-sm p-2 rounded-lg whitespace-pre-wrap ${m.role === 'user' ? 'bg-lotus-900/30 text-lotus-200 ml-8' : m.role === 'error' ? 'bg-red-900/30 text-red-300 mr-8' : 'bg-gray-800 mr-8'}`}>
                 {m.text}
-                {m.model && <div className="text-xs text-gray-500 mt-1">via {m.model} | fitness: {m.fitness?.toFixed(3)}</div>}
+                {m.model && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    via {m.model} | fitness: {m.fitness?.toFixed(3)}
+                    {m.docs && <span className="text-lotus-400"> | {m.docs.length} doc{m.docs.length !== 1 ? 's' : ''} loaded</span>}
+                  </div>
+                )}
+                {m.docs && (
+                  <div className="flex gap-1 flex-wrap mt-1">
+                    {m.docs.map(d => (
+                      <span key={d.id} className="text-xs px-1.5 py-0.5 rounded bg-lotus-900/40 text-lotus-300">
+                        📄 {d.filename}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
             {loading && <div className="text-gray-500 text-sm">Processing through dharma constraints...</div>}
+            <div ref={messagesEndRef} />
+          </div>
+          <div className="flex gap-2 items-center mb-2">
+            <span className="text-xs text-gray-500">Documents:</span>
+            {['all', 'citizenproof', 'research', 'gateway', 'general', 'none'].map(p => (
+              <button key={p} onClick={() => setDocProject(p)}
+                className={`px-2 py-0.5 rounded text-xs transition-colors ${docProject === p
+                  ? (p === 'none' ? 'bg-gray-700 text-gray-300' : 'bg-lotus-600 text-white')
+                  : 'bg-gray-800 text-gray-500 hover:bg-gray-700'}`}>
+                {p === 'none' ? 'Off' : p === 'all' ? 'All' : p}
+              </button>
+            ))}
           </div>
           <div className="flex gap-2 items-end">
             <textarea ref={textareaRef} value={input}
