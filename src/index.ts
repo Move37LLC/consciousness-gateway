@@ -27,6 +27,7 @@ import { WebSearchTool } from './tools/search';
 import { WebBrowseTool } from './tools/browse';
 import { DocumentStore } from './documents/store';
 import { VALID_PROJECTS, ProjectId } from './documents/types';
+import { SystemDocumentStore } from './documents/system-store';
 import { ToolExecutor } from './tools/executor';
 import multer from 'multer';
 
@@ -47,6 +48,8 @@ const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
 const searchTool = new WebSearchTool();
 const browseTool = new WebBrowseTool();
 const documentStore = new DocumentStore();
+const systemDocStore = new SystemDocumentStore();
+systemDocStore.seed();
 const toolExecutor = new ToolExecutor(searchTool, browseTool);
 const health = gateway.getHealth();
 
@@ -72,6 +75,8 @@ console.log(`    search       ${searchTool.available ? 'ready (Brave)' : 'no key
 console.log(`    browse       ${browseTool.available ? 'ready (Grok)' : 'no key'}`);
 const docStats = documentStore.getStats();
 console.log(`    documents    ${docStats.total} stored`);
+const sysDocStats = systemDocStore.getStats();
+console.log(`    system docs  ${sysDocStats.total} seeded (${Object.keys(sysDocStats.byPersonality).join(', ') || 'none'})`);
 console.log('');
 
 // ─── Initialize Consciousness Loop ─────────────────────────────────
@@ -96,7 +101,7 @@ if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     dailySummaryHour: parseInt(process.env.TELEGRAM_DAILY_HOUR || '8', 10),
     notificationPollMs: 10_000,
   };
-  telegram = new TelegramChannel(tgConfig, consciousness, gateway, documentStore);
+  telegram = new TelegramChannel(tgConfig, consciousness, gateway, documentStore, systemDocStore);
   console.log('  Telegram: configured (will start with server)');
 } else {
   console.log('  Telegram: not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)');
@@ -111,6 +116,7 @@ async function shutdown() {
   await consciousness.stop();
   gateway.shutdown();
   documentStore.close();
+  systemDocStore.close();
   process.exit(0);
 }
 
@@ -140,8 +146,10 @@ app.post('/v1/chat', async (req, res) => {
     let systemPromptParts: string[] = [];
 
     if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
+      const systemDocs = systemDocStore.getForPersonality(personality);
       const ctx = buildPersonalityContext(personality as VoiceId, consciousness, {
         documents: documentStore.getRelevantDocuments(personality, content, 5),
+        systemDocuments: systemDocs.length > 0 ? systemDocs : undefined,
       });
       callOptions.systemPrompt = ctx.systemPrompt;
       callOptions.temperature = ctx.temperature;
@@ -532,6 +540,59 @@ app.get('/v1/documents/:id/download', (req, res) => {
   return res.send(doc.content);
 });
 
+// ─── System Document Routes (Admin) ─────────────────────────────────
+
+app.get('/v1/admin/system-documents', (_req, res) => {
+  res.json({ documents: systemDocStore.listAll() });
+});
+
+app.get('/v1/admin/system-documents/:id', (req, res) => {
+  const doc = systemDocStore.getById(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'System document not found' });
+  return res.json(doc);
+});
+
+app.get('/v1/admin/system-documents/:id/versions', (req, res) => {
+  const versions = systemDocStore.getVersions(req.params.id);
+  if (versions.length === 0) return res.status(404).json({ error: 'System document not found' });
+  return res.json({ id: req.params.id, versions });
+});
+
+app.get('/v1/admin/system-documents/:id/versions/:version', (req, res) => {
+  const version = parseInt(req.params.version, 10);
+  if (isNaN(version)) return res.status(400).json({ error: 'Invalid version number' });
+
+  const content = systemDocStore.getVersion(req.params.id, version);
+  if (content === null) return res.status(404).json({ error: 'Version not found' });
+  return res.json({ id: req.params.id, version, content });
+});
+
+app.post('/v1/admin/system-documents/:id', (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content || typeof content !== 'string') {
+      return res.status(400).json({ error: 'Missing "content" field' });
+    }
+
+    const updated = systemDocStore.update(req.params.id, content);
+    if (!updated) return res.status(404).json({ error: 'System document not found' });
+
+    consciousness.logExternalEvent(`System document updated: ${updated.name} → v${updated.version}`, {
+      action: 'system-doc-update', docId: updated.id, version: updated.version,
+    });
+
+    return res.json({
+      id: updated.id,
+      name: updated.name,
+      version: updated.version,
+      updatedAt: updated.updatedAt,
+      contentLength: updated.content.length,
+    });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'Update failed' });
+  }
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -621,6 +682,12 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/documents/:id/download — Download original');
   console.log('    GET  /v1/documents/export/:project — Export as ZIP');
   console.log('');
+  console.log('  System Document Endpoints:');
+  console.log('    GET  /v1/admin/system-documents          — List all');
+  console.log('    GET  /v1/admin/system-documents/:id      — Get document');
+  console.log('    POST /v1/admin/system-documents/:id      — Update (new version)');
+  console.log('    GET  /v1/admin/system-documents/:id/versions — Version history');
+  console.log('');
   console.log('  Tool Endpoints:');
   console.log('    POST /v1/tools/search          — Web search (Brave)');
   console.log('    POST /v1/tools/browse           — Browse + summarize (Grok)');
@@ -653,4 +720,4 @@ app.listen(PORT, async () => {
   console.log('');
 });
 
-export { gateway, consciousness, telegram, documentStore };
+export { gateway, consciousness, telegram, documentStore, systemDocStore };

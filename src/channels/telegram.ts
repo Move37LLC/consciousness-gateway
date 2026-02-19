@@ -27,6 +27,7 @@ import { WebSearchTool } from '../tools/search';
 import { WebBrowseTool } from '../tools/browse';
 import { ToolExecutor } from '../tools/executor';
 import { DocumentStore } from '../documents/store';
+import { SystemDocumentStore } from '../documents/system-store';
 
 export interface TelegramConfig {
   token: string;
@@ -51,17 +52,20 @@ export class TelegramChannel {
   private browseTool: WebBrowseTool;
   private toolExecutor: ToolExecutor;
   private documents: DocumentStore | null;
+  private systemDocs: SystemDocumentStore | null;
 
   constructor(
     config: TelegramConfig,
     consciousness: ConsciousnessLoop,
     gateway: ConsciousnessGateway,
     documents?: DocumentStore,
+    systemDocs?: SystemDocumentStore,
   ) {
     this.config = config;
     this.consciousness = consciousness;
     this.gateway = gateway;
     this.documents = documents ?? null;
+    this.systemDocs = systemDocs ?? null;
 
     this.bot = new TelegramBot(config.token, { polling: true });
     this.searchTool = new WebSearchTool();
@@ -435,9 +439,11 @@ export class TelegramChannel {
     const voice = VOICES[resolvedVoiceId];
 
     const relevantDocs = this.documents?.getRelevantDocuments(resolvedVoiceId, text, 3) ?? [];
+    const sysDocsForPersonality = this.systemDocs?.getForPersonality(resolvedVoiceId) ?? [];
 
     const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness, {
       documents: relevantDocs.length > 0 ? relevantDocs : undefined,
+      systemDocuments: sysDocsForPersonality.length > 0 ? sysDocsForPersonality : undefined,
     });
 
     // Append tool instructions so the personality can autonomously use tools

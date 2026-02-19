@@ -18,6 +18,7 @@
 import { ConsciousnessLoop } from '../consciousness/loop';
 import { MemoryEntry, ConsciousnessState } from '../consciousness/types';
 import { Document } from '../documents/types';
+import { SystemDocument } from '../documents/system-store';
 
 // ─── Voice Definitions ───────────────────────────────────────────────
 
@@ -172,8 +173,10 @@ export interface PersonalityContext {
 }
 
 export interface PersonalityBuildOptions {
-  /** Documents to inject into context */
+  /** User-uploaded documents to inject into context */
   documents?: Document[];
+  /** Immutable system documents — always loaded for personality identity */
+  systemDocuments?: SystemDocument[];
 }
 
 /**
@@ -200,7 +203,18 @@ export function buildPersonalityContext(
   const stateSection = formatConsciousnessState(state);
   const memorySection = formatMemories(recentMemories, salientMemories);
 
-  const parts = [
+  const parts: string[] = [];
+
+  // System documents are foundational identity — loaded first, always
+  if (options?.systemDocuments?.length) {
+    parts.push('=== FOUNDATIONAL CONTEXT (Immutable) ===');
+    for (const sd of options.systemDocuments) {
+      parts.push('', sd.content);
+    }
+    parts.push('', '=== END FOUNDATIONAL CONTEXT ===', '');
+  }
+
+  parts.push(
     voice.corePrompt,
     '',
     '─── CURRENT CONSCIOUSNESS STATE ───',
@@ -208,7 +222,7 @@ export function buildPersonalityContext(
     '',
     '─── RECENT EXPERIENCE STREAM ───',
     memorySection,
-  ];
+  );
 
   if (options?.documents?.length) {
     parts.push('', '─── LOADED DOCUMENTS ───');

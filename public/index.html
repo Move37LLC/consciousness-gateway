@@ -363,6 +363,8 @@
     function DocumentsPanel() {
       const [docs, setDocs] = useState([]);
       const [stats, setStats] = useState(null);
+      const [sysDocs, setSysDocs] = useState([]);
+      const [viewSysDoc, setViewSysDoc] = useState(null);
       const [filter, setFilter] = useState('');
       const [search, setSearch] = useState('');
       const [uploading, setUploading] = useState(false);
@@ -382,7 +384,17 @@
         if (s) setStats(s);
       }, [filter, search]);
 
-      useEffect(() => { loadDocs(); }, [loadDocs]);
+      const loadSysDocs = useCallback(async () => {
+        const r = await api('/v1/admin/system-documents');
+        if (r?.documents) setSysDocs(r.documents);
+      }, []);
+
+      useEffect(() => { loadDocs(); loadSysDocs(); }, [loadDocs, loadSysDocs]);
+
+      const viewSystemDoc = async (id) => {
+        const d = await api('/v1/admin/system-documents/' + id);
+        if (d) setViewSysDoc(d);
+      };
 
       const showToast = (msg, type = 'success') => {
         setToast({ msg, type });
@@ -478,6 +490,59 @@
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..."
               className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs flex-1 min-w-0 focus:outline-none focus:border-lotus-500" />
           </div>
+
+          {/* System Documents */}
+          {sysDocs.length > 0 && (
+            <div className="mb-3">
+              <div className="text-xs text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-1">
+                <span>🔒</span> System Documents ({sysDocs.length})
+              </div>
+              <div className="space-y-1">
+                {sysDocs.map(sd => (
+                  <div key={sd.id} className="flex items-center gap-2 p-2 rounded bg-indigo-950/30 border border-indigo-900/40 hover:bg-indigo-950/50 cursor-pointer text-sm" onClick={() => viewSystemDoc(sd.id)}>
+                    <span className="text-indigo-400">🔒</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate font-medium text-indigo-200">{sd.name}</div>
+                      <div className="flex gap-1 flex-wrap mt-0.5">
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300">{sd.category}</span>
+                        {sd.personality && <span className="text-xs px-1.5 py-0.5 rounded bg-lotus-900/40 text-lotus-300">{sd.personality}</span>}
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-600 text-right shrink-0">
+                      <div>{(sd.contentLength / 1024).toFixed(1)}KB</div>
+                      <div>v{sd.version}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* System Document Viewer Modal */}
+          {viewSysDoc && (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setViewSysDoc(null)}>
+              <div className="bg-gray-900 border border-indigo-800/50 rounded-xl max-w-3xl w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between p-4 border-b border-indigo-900/40">
+                  <div>
+                    <h3 className="font-bold text-lg text-indigo-200">🔒 {viewSysDoc.name}</h3>
+                    <div className="flex gap-2 mt-1 text-xs text-gray-400">
+                      <span className="px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300">{viewSysDoc.category}</span>
+                      {viewSysDoc.personality && <span className="px-1.5 py-0.5 rounded bg-lotus-900/40 text-lotus-300">{viewSysDoc.personality}</span>}
+                      <span>v{viewSysDoc.version}</span>
+                      <span>{(viewSysDoc.content?.length / 1024).toFixed(1)}KB</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <span className="px-3 py-1 bg-indigo-900/30 rounded text-sm text-indigo-400">Immutable</span>
+                    <button onClick={() => setViewSysDoc(null)} className="px-3 py-1 bg-gray-800 hover:bg-gray-700 rounded text-sm">✕</button>
+                  </div>
+                </div>
+                <div className="p-4 overflow-y-auto flex-1">
+                  <pre className="text-sm whitespace-pre-wrap font-mono text-gray-300 leading-relaxed">{viewSysDoc.content}</pre>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Document List */}
           <div className="max-h-64 overflow-y-auto space-y-1">
