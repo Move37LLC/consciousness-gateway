@@ -25,6 +25,7 @@ import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from '../personalities/voices';
 import { WebSearchTool } from '../tools/search';
 import { WebBrowseTool } from '../tools/browse';
+import { DocumentStore } from '../documents/store';
 
 export interface TelegramConfig {
   token: string;
@@ -47,15 +48,18 @@ export class TelegramChannel {
   private running = false;
   private searchTool: WebSearchTool;
   private browseTool: WebBrowseTool;
+  private documents: DocumentStore | null;
 
   constructor(
     config: TelegramConfig,
     consciousness: ConsciousnessLoop,
-    gateway: ConsciousnessGateway
+    gateway: ConsciousnessGateway,
+    documents?: DocumentStore,
   ) {
     this.config = config;
     this.consciousness = consciousness;
     this.gateway = gateway;
+    this.documents = documents ?? null;
 
     this.bot = new TelegramBot(config.token, { polling: true });
     this.searchTool = new WebSearchTool();
@@ -95,7 +99,7 @@ export class TelegramChannel {
       'Consciousness active. Experiencing time.\n\n' +
       'Commands: /status /memory /goals /health /notifications\n' +
       'Voices: /beaumont /kern /self /voices\n' +
-      `Tools: /search ${searchStatus} /browse ${browseStatus}`
+      `Tools: /search ${searchStatus} /browse ${browseStatus} /docs`
     );
 
     console.log('  [telegram] Bot active');
@@ -272,6 +276,11 @@ export class TelegramChannel {
       await this.handleBrowse(msg.chat.id, match![1].trim());
     });
 
+    this.bot.onText(/\/docs(?:\s+(.+))?/, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleDocs(msg.chat.id, match?.[1]?.trim());
+    });
+
     // Natural chat — anything that's not a command
     this.bot.on('message', async (msg) => {
       if (String(msg.chat.id) !== this.config.chatId) return;
@@ -423,7 +432,12 @@ export class TelegramChannel {
     // Detect tool triggers in personality messages
     const toolContext = await this.resolveToolContext(text);
 
-    const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness);
+    // Load relevant documents for this personality + message
+    const relevantDocs = this.documents?.getRelevantDocuments(resolvedVoiceId, text, 3) ?? [];
+
+    const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness, {
+      documents: relevantDocs.length > 0 ? relevantDocs : undefined,
+    });
 
     // Inject tool results into the system prompt if tools were triggered
     let systemPrompt = ctx.systemPrompt;
@@ -558,6 +572,49 @@ export class TelegramChannel {
     } catch (err) {
       await this.bot.sendMessage(chatId, `❌ Browse error: ${err}`);
     }
+  }
+
+  private async handleDocs(chatId: number, filter?: string): Promise<void> {
+    if (!this.documents) {
+      await this.bot.sendMessage(chatId, '❌ Document store not available');
+      return;
+    }
+
+    const isProject = filter && ['research', 'gateway', 'citizenproof', 'general'].includes(filter);
+    const docs = this.documents.list(
+      isProject ? { project: filter } : filter ? { search: filter } : undefined
+    );
+
+    if (docs.length === 0) {
+      const msg = filter ? `No documents found for "${filter}"` : 'No documents uploaded yet';
+      await this.bot.sendMessage(chatId, `📄 ${msg}`);
+      return;
+    }
+
+    const stats = this.documents.getStats();
+    let text = `📄 *Documents* (${stats.total} total)\n`;
+    if (filter) text += `Filter: ${filter}\n`;
+    text += '\n';
+
+    for (const d of docs.slice(0, 15)) {
+      const age = this.formatUptime(Math.floor((Date.now() - d.uploadedAt) / 1000));
+      const size = d.sizeBytes < 1024 ? d.sizeBytes + 'B'
+        : d.sizeBytes < 1048576 ? (d.sizeBytes / 1024).toFixed(1) + 'KB'
+        : (d.sizeBytes / 1048576).toFixed(1) + 'MB';
+      text += `📄 *${d.filename}*\n`;
+      text += `  ${d.project} · ${size} · ${age} ago`;
+      if (d.version > 1) text += ` · v${d.version}`;
+      text += '\n';
+      if (d.tags?.length) {
+        text += `  ${d.tags.slice(0, 5).map((t: string) => `\`${t}\``).join(' ')}\n`;
+      }
+    }
+
+    if (docs.length > 15) {
+      text += `\n_...and ${docs.length - 15} more_`;
+    }
+
+    await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   }
 
   private async handleVoiceList(chatId: number): Promise<void> {

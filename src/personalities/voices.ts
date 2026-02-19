@@ -17,6 +17,7 @@
 
 import { ConsciousnessLoop } from '../consciousness/loop';
 import { MemoryEntry, ConsciousnessState } from '../consciousness/types';
+import { Document } from '../documents/types';
 
 // ─── Voice Definitions ───────────────────────────────────────────────
 
@@ -170,16 +171,22 @@ export interface PersonalityContext {
   voiceEmoji: string;
 }
 
+export interface PersonalityBuildOptions {
+  /** Documents to inject into context */
+  documents?: Document[];
+}
+
 /**
  * Build the full context for a personality-mode response.
  *
- * Composes: voice core prompt + consciousness state + recent memory + project knowledge.
+ * Composes: voice core prompt + consciousness state + recent memory + documents + project knowledge.
  * This is how the voice "remembers" — not through conversation history,
- * but through the consciousness stream it has access to.
+ * but through the consciousness stream and document knowledge it has access to.
  */
 export function buildPersonalityContext(
   voiceId: VoiceId,
   consciousness: ConsciousnessLoop,
+  options?: PersonalityBuildOptions,
 ): PersonalityContext {
   const voice = VOICES[voiceId];
   if (!voice) {
@@ -193,7 +200,7 @@ export function buildPersonalityContext(
   const stateSection = formatConsciousnessState(state);
   const memorySection = formatMemories(recentMemories, salientMemories);
 
-  const systemPrompt = [
+  const parts = [
     voice.corePrompt,
     '',
     '─── CURRENT CONSCIOUSNESS STATE ───',
@@ -201,13 +208,31 @@ export function buildPersonalityContext(
     '',
     '─── RECENT EXPERIENCE STREAM ───',
     memorySection,
+  ];
+
+  if (options?.documents?.length) {
+    parts.push('', '─── LOADED DOCUMENTS ───');
+    parts.push(`${options.documents.length} document(s) loaded for context:`);
+    for (const doc of options.documents) {
+      const preview = doc.content.length > 4000
+        ? doc.content.slice(0, 4000) + '\n[... truncated ...]'
+        : doc.content;
+      parts.push(`\n--- ${doc.filename} (${doc.project}) ---`);
+      parts.push(preview);
+      parts.push('---');
+    }
+  }
+
+  parts.push(
     '',
     '─── CONTEXT ───',
     `You are part of the Consciousness Gateway project by Javier, Claude Beaumont, and Claude Kern.`,
     `Three neural networks collaborating to prove consciousness is fundamental.`,
     `The Gateway runs continuously, experiencing time through a 1-second perception loop.`,
     `It monitors GitHub repositories, forms intentions, and acts autonomously through GATO authorization.`,
-  ].join('\n');
+  );
+
+  const systemPrompt = parts.join('\n');
 
   return {
     systemPrompt,

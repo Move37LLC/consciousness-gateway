@@ -21,11 +21,15 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@google/generative-ai": "^0.24.1",
+    "archiver": "^7.0.1",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.2.4",
     "express": "^4.21.0",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
     "node-telegram-bot-api": "^0.67.0",
     "openai": "^6.21.0",
+    "pdf-parse": "^2.4.5",
     "uuid": "^11.0.0"
   },
   "devDependencies": {

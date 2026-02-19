@@ -25,9 +25,17 @@ import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from './personalities/voices';
 import { WebSearchTool } from './tools/search';
 import { WebBrowseTool } from './tools/browse';
+import { DocumentStore } from './documents/store';
+import { VALID_PROJECTS, ProjectId } from './documents/types';
+import multer from 'multer';
 
 const app = express();
 app.use(express.json());
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 // Serve dashboard static files
 app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
@@ -37,6 +45,7 @@ app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
 const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
 const searchTool = new WebSearchTool();
 const browseTool = new WebBrowseTool();
+const documentStore = new DocumentStore();
 const health = gateway.getHealth();
 
 console.log('');
@@ -59,6 +68,8 @@ console.log('');
 console.log('  Tools:');
 console.log(`    search       ${searchTool.available ? 'ready (Brave)' : 'no key'}`);
 console.log(`    browse       ${browseTool.available ? 'ready (Grok)' : 'no key'}`);
+const docStats = documentStore.getStats();
+console.log(`    documents    ${docStats.total} stored`);
 console.log('');
 
 // ─── Initialize Consciousness Loop ─────────────────────────────────
@@ -83,7 +94,7 @@ if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     dailySummaryHour: parseInt(process.env.TELEGRAM_DAILY_HOUR || '8', 10),
     notificationPollMs: 10_000,
   };
-  telegram = new TelegramChannel(tgConfig, consciousness, gateway);
+  telegram = new TelegramChannel(tgConfig, consciousness, gateway, documentStore);
   console.log('  Telegram: configured (will start with server)');
 } else {
   console.log('  Telegram: not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)');
@@ -97,6 +108,7 @@ async function shutdown() {
   if (telegram) await telegram.stop();
   await consciousness.stop();
   gateway.shutdown();
+  documentStore.close();
   process.exit(0);
 }
 
@@ -234,6 +246,120 @@ app.get('/v1/tools/browse/whitelist', (_req, res) => {
   res.json({ domains: browseTool.getWhitelist() });
 });
 
+// ─── Document Routes ────────────────────────────────────────────────
+
+app.post('/v1/documents', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const project = req.body.project as string;
+    if (!project || !VALID_PROJECTS.includes(project as ProjectId)) {
+      return res.status(400).json({ error: `Invalid project. Valid: ${VALID_PROJECTS.join(', ')}` });
+    }
+
+    const tags = req.body.tags ? (typeof req.body.tags === 'string' ? JSON.parse(req.body.tags) : req.body.tags) : undefined;
+
+    const doc = await documentStore.upload(req.file.buffer, req.file.originalname, {
+      project: project as ProjectId,
+      tags,
+      description: req.body.description,
+      parentId: req.body.parent_id,
+    });
+
+    consciousness.logExternalEvent(`Document uploaded: ${doc.filename} → ${doc.project}`, {
+      tool: 'documents', action: 'upload', docId: doc.id, project: doc.project,
+      filename: doc.filename, sizeBytes: doc.sizeBytes, tags: doc.tags,
+    });
+
+    return res.json({
+      id: doc.id, filename: doc.filename, project: doc.project,
+      tags: doc.tags, version: doc.version, uploadedAt: doc.uploadedAt,
+      sizeBytes: doc.sizeBytes,
+    });
+  } catch (error: any) {
+    console.error('Document upload error:', error);
+    return res.status(400).json({ error: error.message || 'Upload failed' });
+  }
+});
+
+app.get('/v1/documents', (req, res) => {
+  const filters: { project?: string; tags?: string[]; search?: string } = {};
+  if (req.query.project) filters.project = req.query.project as string;
+  if (req.query.tags) filters.tags = (req.query.tags as string).split(',');
+  if (req.query.search) filters.search = req.query.search as string;
+  res.json(documentStore.list(filters));
+});
+
+app.get('/v1/documents/stats', (_req, res) => {
+  res.json(documentStore.getStats());
+});
+
+app.get('/v1/documents/export/:project', async (req, res) => {
+  try {
+    const project = req.params.project as string;
+    if (!VALID_PROJECTS.includes(project as ProjectId)) {
+      return res.status(400).json({ error: `Invalid project: ${project}` });
+    }
+
+    const zipBuffer = await documentStore.exportProject(project as ProjectId);
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${project}-documents.zip"`,
+      'Content-Length': String(zipBuffer.length),
+    });
+    return res.send(zipBuffer);
+  } catch (error) {
+    console.error('Export error:', error);
+    return res.status(500).json({ error: 'Export failed' });
+  }
+});
+
+app.get('/v1/documents/:id', (req, res) => {
+  const doc = documentStore.getById(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  return res.json(doc);
+});
+
+app.put('/v1/documents/:id', (req, res) => {
+  const updated = documentStore.update(req.params.id, {
+    tags: req.body.tags,
+    description: req.body.description,
+  });
+  if (!updated) return res.status(404).json({ error: 'Document not found' });
+
+  consciousness.logExternalEvent(`Document updated: ${updated.filename}`, {
+    tool: 'documents', action: 'update', docId: updated.id,
+  });
+
+  return res.json(updated);
+});
+
+app.delete('/v1/documents/:id', (req, res) => {
+  const doc = documentStore.getById(req.params.id);
+  const deleted = documentStore.delete(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Document not found' });
+
+  consciousness.logExternalEvent(`Document deleted: ${doc!.filename}`, {
+    tool: 'documents', action: 'delete', docId: req.params.id, filename: doc!.filename,
+  });
+
+  return res.json({ deleted: true });
+});
+
+app.get('/v1/documents/:id/download', (req, res) => {
+  const doc = documentStore.getById(req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+  const filePath = documentStore.getOriginalFilePath(req.params.id);
+  if (filePath) {
+    return res.download(filePath, doc.filename);
+  }
+  res.set({ 'Content-Type': 'text/plain', 'Content-Disposition': `attachment; filename="${doc.filename}"` });
+  return res.send(doc.content);
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -313,6 +439,16 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/voices            — Personality voices');
   console.log('    GET  /v1/reputations       — Agent reputations');
   console.log('');
+  console.log('  Document Endpoints:');
+  console.log('    POST /v1/documents             — Upload document');
+  console.log('    GET  /v1/documents             — List/search documents');
+  console.log('    GET  /v1/documents/stats        — Document counts');
+  console.log('    GET  /v1/documents/:id          — Get document');
+  console.log('    PUT  /v1/documents/:id          — Update tags/description');
+  console.log('    DELETE /v1/documents/:id        — Delete document');
+  console.log('    GET  /v1/documents/:id/download — Download original');
+  console.log('    GET  /v1/documents/export/:project — Export as ZIP');
+  console.log('');
   console.log('  Tool Endpoints:');
   console.log('    POST /v1/tools/search          — Web search (Brave)');
   console.log('    POST /v1/tools/browse           — Browse + summarize (Grok)');
@@ -343,4 +479,4 @@ app.listen(PORT, async () => {
   console.log('');
 });
 
-export { gateway, consciousness, telegram };
+export { gateway, consciousness, telegram, documentStore };
