@@ -9,6 +9,7 @@
  */
 
 import OpenAI from 'openai';
+import { WhitelistStore } from './whitelist';
 
 export interface BrowseResult {
   url: string;
@@ -26,49 +27,30 @@ export interface BrowseConfig {
   maxTextLength?: number;
   /** Grok model for summarization */
   summaryModel?: string;
-  /** Allowed domain patterns (substring match) */
-  domainWhitelist?: string[];
+  /** Persistent whitelist store (replaces hardcoded array) */
+  whitelistStore?: WhitelistStore;
 }
-
-const DEFAULT_WHITELIST = [
-  'github.com',
-  'arxiv.org',
-  'wikipedia.org',
-  'scholar.google.com',
-  'news.ycombinator.com',
-  'stackoverflow.com',
-  'docs.google.com',
-  'medium.com',
-  'substack.com',
-  'x.ai',
-  'anthropic.com',
-  'openai.com',
-  'huggingface.co',
-  'reddit.com',
-  'sciencedirect.com',
-  'nature.com',
-  'doi.org',
-  'biorxiv.org',
-  'medrxiv.org',
-  'gofund.me',
-  'gofundme.com',
-];
 
 export class WebBrowseTool {
   private xaiClient: OpenAI | null = null;
-  private config: Required<BrowseConfig>;
+  private xaiApiKey: string;
+  private maxTextLength: number;
+  private summaryModel: string;
+  private whitelistStore: WhitelistStore;
 
   constructor(config?: BrowseConfig) {
-    this.config = {
-      xaiApiKey: config?.xaiApiKey ?? process.env.XAI_API_KEY ?? '',
-      maxTextLength: config?.maxTextLength ?? 12_000,
-      summaryModel: config?.summaryModel ?? 'grok-4-1-fast-non-reasoning',
-      domainWhitelist: config?.domainWhitelist ?? DEFAULT_WHITELIST,
-    };
+    this.xaiApiKey = config?.xaiApiKey ?? process.env.XAI_API_KEY ?? '';
+    this.maxTextLength = config?.maxTextLength ?? 12_000;
+    this.summaryModel = config?.summaryModel ?? 'grok-4-1-fast-non-reasoning';
+    this.whitelistStore = config?.whitelistStore ?? new WhitelistStore();
   }
 
   get available(): boolean {
-    return !!this.config.xaiApiKey;
+    return !!this.xaiApiKey;
+  }
+
+  getWhitelistStore(): WhitelistStore {
+    return this.whitelistStore;
   }
 
   /**
@@ -83,13 +65,13 @@ export class WebBrowseTool {
     }
 
     const domain = parsed.hostname;
-    const onWhitelist = this.config.domainWhitelist.some(d => domain.includes(d));
+    const allowed = this.whitelistStore.isAllowed(domain);
 
-    if (!onWhitelist) {
+    if (!allowed) {
       return {
         allowed: false,
         domain,
-        reason: `Domain "${domain}" not on whitelist. Allowed: ${this.config.domainWhitelist.join(', ')}`,
+        reason: `Domain "${domain}" not on whitelist. Add it via the dashboard.`,
       };
     }
 
@@ -147,14 +129,14 @@ export class WebBrowseTool {
       text = extracted.text;
       title = extracted.title;
     } else if (contentType.includes('application/json')) {
-      text = JSON.stringify(JSON.parse(rawBody), null, 2).slice(0, this.config.maxTextLength);
+      text = JSON.stringify(JSON.parse(rawBody), null, 2).slice(0, this.maxTextLength);
       title = 'JSON Response';
     } else {
-      text = rawBody.slice(0, this.config.maxTextLength);
+      text = rawBody.slice(0, this.maxTextLength);
       title = 'Plain Text';
     }
 
-    const truncated = text.slice(0, this.config.maxTextLength);
+    const truncated = text.slice(0, this.maxTextLength);
 
     const summary = await this.summarize(truncated, url, context);
 
@@ -163,14 +145,14 @@ export class WebBrowseTool {
       title,
       rawTextLength: text.length,
       summary,
-      summarizedBy: this.config.summaryModel,
+      summarizedBy: this.summaryModel,
       timeTakenMs: Date.now() - startTime,
       authorized: true,
     };
   }
 
   private async summarize(text: string, url: string, context?: string): Promise<string> {
-    if (!this.config.xaiApiKey) {
+    if (!this.xaiApiKey) {
       const preview = text.slice(0, 500);
       return `[No xAI key — raw preview]\n\n${preview}${text.length > 500 ? '...' : ''}`;
     }
@@ -193,7 +175,7 @@ export class WebBrowseTool {
 
     try {
       const response = await client.chat.completions.create({
-        model: this.config.summaryModel,
+        model: this.summaryModel,
         max_tokens: 800,
         temperature: 0.3,
         messages: [
@@ -212,7 +194,7 @@ export class WebBrowseTool {
   private getXAIClient(): OpenAI {
     if (!this.xaiClient) {
       this.xaiClient = new OpenAI({
-        apiKey: this.config.xaiApiKey,
+        apiKey: this.xaiApiKey,
         baseURL: 'https://api.x.ai/v1',
       });
     }
@@ -256,7 +238,7 @@ export class WebBrowseTool {
    * Get the current domain whitelist.
    */
   getWhitelist(): string[] {
-    return [...this.config.domainWhitelist];
+    return this.whitelistStore.getDomains();
   }
 }
 

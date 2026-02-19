@@ -365,7 +365,48 @@ app.post('/v1/tools/browse', async (req, res) => {
 });
 
 app.get('/v1/tools/browse/whitelist', (_req, res) => {
-  res.json({ domains: browseTool.getWhitelist() });
+  const store = browseTool.getWhitelistStore();
+  res.json({ entries: store.list(), count: store.getCount() });
+});
+
+app.post('/v1/tools/browse/whitelist', (req, res) => {
+  try {
+    const { domain, notes } = req.body;
+    if (!domain || typeof domain !== 'string') {
+      return res.status(400).json({ error: 'Missing "domain" field' });
+    }
+
+    const store = browseTool.getWhitelistStore();
+    const entry = store.add(domain, notes);
+
+    consciousness.logExternalEvent(`Whitelist: added "${entry.domain}"`, {
+      tool: 'whitelist', action: 'add', domain: entry.domain, notes,
+    });
+
+    return res.json(entry);
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'Failed to add domain' });
+  }
+});
+
+app.delete('/v1/tools/browse/whitelist/:domain', (req, res) => {
+  try {
+    const domain = decodeURIComponent(req.params.domain);
+    const store = browseTool.getWhitelistStore();
+    const deleted = store.remove(domain);
+
+    if (!deleted) {
+      return res.status(404).json({ error: `Domain "${domain}" not found` });
+    }
+
+    consciousness.logExternalEvent(`Whitelist: removed "${domain}"`, {
+      tool: 'whitelist', action: 'remove', domain,
+    });
+
+    return res.json({ deleted: true, domain });
+  } catch (error: any) {
+    return res.status(400).json({ error: error.message || 'Failed to remove domain' });
+  }
 });
 
 app.get('/v1/tools/status', (_req, res) => {
@@ -583,7 +624,9 @@ app.listen(PORT, async () => {
   console.log('  Tool Endpoints:');
   console.log('    POST /v1/tools/search          — Web search (Brave)');
   console.log('    POST /v1/tools/browse           — Browse + summarize (Grok)');
-  console.log('    GET  /v1/tools/browse/whitelist  — Allowed domains');
+  console.log('    GET  /v1/tools/browse/whitelist  — List whitelisted domains');
+  console.log('    POST /v1/tools/browse/whitelist  — Add domain');
+  console.log('    DELETE /v1/tools/browse/whitelist/:domain — Remove domain');
   console.log('');
   console.log('  Consciousness Endpoints:');
   console.log('    GET  /v1/consciousness              — Current state');

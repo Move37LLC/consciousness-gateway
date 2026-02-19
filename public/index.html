@@ -190,6 +190,108 @@
       );
     }
 
+    // ── Whitelist Panel ────────────────────────────────────────
+
+    function WhitelistPanel() {
+      const [entries, setEntries] = useState([]);
+      const [count, setCount] = useState(0);
+      const [newDomain, setNewDomain] = useState('');
+      const [toast, setToast] = useState(null);
+      const [expanded, setExpanded] = useState(false);
+      const [filter, setFilter] = useState('');
+
+      const load = useCallback(async () => {
+        const data = await api('/v1/tools/browse/whitelist');
+        if (data) { setEntries(data.entries || []); setCount(data.count || 0); }
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+
+      const showToast = (msg, type = 'success') => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 3000);
+      };
+
+      const addDomain = async () => {
+        const domain = newDomain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+        if (!domain) return;
+        const r = await fetch('/v1/tools/browse/whitelist', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain }),
+        });
+        const data = await r.json();
+        if (r.ok) {
+          showToast(`${domain} added to whitelist`);
+          setNewDomain('');
+          load();
+        } else {
+          showToast(data.error || 'Failed', 'error');
+        }
+      };
+
+      const removeDomain = async (domain) => {
+        const r = await fetch('/v1/tools/browse/whitelist/' + encodeURIComponent(domain), { method: 'DELETE' });
+        const data = await r.json();
+        if (r.ok) {
+          showToast(`${domain} removed`);
+          load();
+        } else {
+          showToast(data.error || 'Failed', 'error');
+        }
+      };
+
+      const filtered = filter
+        ? entries.filter(e => e.domain.includes(filter.toLowerCase()))
+        : entries;
+
+      return (
+        <Card title={`Browse Whitelist (${count})`} icon="🌐">
+          {toast && (
+            <div className={`mb-2 p-2 rounded text-xs fade-in ${toast.type === 'error' ? 'bg-red-900/50 text-red-300' : 'bg-green-900/50 text-green-300'}`}>
+              {toast.msg}
+            </div>
+          )}
+
+          {/* Add domain */}
+          <div className="flex gap-2 mb-3">
+            <input value={newDomain} onChange={e => setNewDomain(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addDomain()}
+              placeholder="example.com"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-lotus-500" />
+            <button onClick={addDomain}
+              className="px-3 py-1 bg-lotus-600 hover:bg-lotus-500 rounded text-xs font-medium transition-colors">Add</button>
+          </div>
+
+          {/* Domain list toggle */}
+          <button onClick={() => setExpanded(!expanded)}
+            className="text-xs text-gray-500 hover:text-gray-300 mb-2 flex items-center gap-1">
+            {expanded ? '▼' : '▶'} {count} domains whitelisted
+          </button>
+
+          {expanded && (
+            <>
+              {count > 10 && (
+                <input value={filter} onChange={e => setFilter(e.target.value)}
+                  placeholder="Filter domains..."
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs mb-2 focus:outline-none focus:border-lotus-500" />
+              )}
+              <div className="flex flex-wrap gap-1 max-h-48 overflow-y-auto">
+                {filtered.map(e => (
+                  <span key={e.domain} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${e.addedBy === 'system' ? 'bg-gray-800 text-gray-400' : 'bg-lotus-900/40 text-lotus-300'}`}>
+                    {e.domain}
+                    {e.addedBy === 'user' && (
+                      <button onClick={() => removeDomain(e.domain)}
+                        className="text-gray-600 hover:text-red-400 ml-0.5">&times;</button>
+                    )}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+        </Card>
+      );
+    }
+
     // ── Goals Panel ──────────────────────────────────────────
 
     function GoalsPanel({ goals }) {
@@ -642,6 +744,7 @@
             <ConsciousnessPanel data={consciousness} />
             <DharmaPanel health={health} />
             <MonitorsPanel consciousness={consciousness} health={health} />
+            <WhitelistPanel />
             <GoalsPanel goals={consciousness?.goals} />
             <MemoryTimeline memory={memory} filter={memFilter} setFilter={setMemFilter} />
             <DocumentsPanel />
