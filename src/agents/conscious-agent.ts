@@ -26,12 +26,18 @@ import { MindfulnessLayer } from '../dharma/mindfulness';
 import { CompassionEvaluator } from '../dharma/compassion';
 import { v4 as uuid } from 'uuid';
 
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 /**
  * Options passed through the conscious agent pipeline to the model provider.
  */
 export interface AgentCallOptions {
   systemPrompt?: string;
   temperature?: number;
+  conversationHistory?: ConversationTurn[];
 }
 
 /**

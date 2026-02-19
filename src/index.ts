@@ -119,7 +119,7 @@ process.on('SIGTERM', () => { shutdown(); });
 
 app.post('/v1/chat', async (req, res) => {
   try {
-    const { content, sender_id, channel, role, personality } = req.body;
+    const { content, sender_id, channel, role, personality, conversationHistory } = req.body;
     if (!content || typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing "content" field' });
     }
@@ -133,14 +133,23 @@ app.post('/v1/chat', async (req, res) => {
       metadata: personality ? { personality } : undefined,
     };
 
-    // Build personality context if a voice was requested
-    let callOptions;
+    // Build call options with optional personality context and conversation history
+    let callOptions: import('./agents/conscious-agent').AgentCallOptions = {};
+
     if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
       const ctx = buildPersonalityContext(personality as VoiceId, consciousness);
-      callOptions = { systemPrompt: ctx.systemPrompt, temperature: ctx.temperature };
+      callOptions.systemPrompt = ctx.systemPrompt;
+      callOptions.temperature = ctx.temperature;
     }
 
-    const response = await gateway.route(message, callOptions);
+    if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
+      callOptions.conversationHistory = conversationHistory
+        .filter((m: any) => m.role && m.content && typeof m.content === 'string')
+        .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    }
+
+    const hasOptions = callOptions.systemPrompt || callOptions.temperature || callOptions.conversationHistory;
+    const response = await gateway.route(message, hasOptions ? callOptions : undefined);
     return res.json(response);
   } catch (error) {
     console.error('Route error:', error);

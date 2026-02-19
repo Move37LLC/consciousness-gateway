@@ -29,10 +29,16 @@ export interface ModelProviderInterface {
   call(model: string, prompt: string, options?: CallOptions): Promise<ProviderCallResult>;
 }
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface CallOptions {
   maxTokens?: number;
   temperature?: number;
   systemPrompt?: string;
+  conversationHistory?: ConversationMessage[];
 }
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -62,12 +68,20 @@ export class AnthropicProvider implements ModelProviderInterface {
   async call(model: string, prompt: string, options?: CallOptions): Promise<ProviderCallResult> {
     const client = this.getClient();
 
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    if (options?.conversationHistory?.length) {
+      for (const m of options.conversationHistory) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+    messages.push({ role: 'user', content: prompt });
+
     const response = await client.messages.create({
       model: this.resolveModel(model),
       max_tokens: options?.maxTokens ?? 1024,
       temperature: options?.temperature ?? 0.7,
       system: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: prompt }],
+      messages,
     });
 
     const textBlock = response.content.find(b => b.type === 'text');
@@ -83,7 +97,6 @@ export class AnthropicProvider implements ModelProviderInterface {
   }
 
   private resolveModel(model: string): string {
-    // Map our internal model IDs to Anthropic's model strings
     const mapping: Record<string, string> = {
       'claude-opus-4': 'claude-opus-4-20250514',
       'claude-sonnet-4': 'claude-sonnet-4-20250514',
@@ -116,14 +129,21 @@ export class OpenAIProvider implements ModelProviderInterface {
   async call(model: string, prompt: string, options?: CallOptions): Promise<ProviderCallResult> {
     const client = this.getClient();
 
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
+    ];
+    if (options?.conversationHistory?.length) {
+      for (const m of options.conversationHistory) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+    messages.push({ role: 'user', content: prompt });
+
     const response = await client.chat.completions.create({
       model: this.resolveModel(model),
       max_tokens: options?.maxTokens ?? 1024,
       temperature: options?.temperature ?? 0.7,
-      messages: [
-        { role: 'system', content: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
-        { role: 'user', content: prompt },
-      ],
+      messages,
     });
 
     const choice = response.choices[0];
@@ -174,8 +194,16 @@ export class GoogleAIProvider implements ModelProviderInterface {
       systemInstruction: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
     });
 
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+    if (options?.conversationHistory?.length) {
+      for (const m of options.conversationHistory) {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
+      }
+    }
+    contents.push({ role: 'user', parts: [{ text: prompt }] });
+
     const result = await genModel.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents,
       generationConfig: {
         maxOutputTokens: options?.maxTokens ?? 1024,
         temperature: options?.temperature ?? 0.7,
@@ -230,14 +258,21 @@ export class XAIProvider implements ModelProviderInterface {
   async call(model: string, prompt: string, options?: CallOptions): Promise<ProviderCallResult> {
     const client = this.getClient();
 
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
+    ];
+    if (options?.conversationHistory?.length) {
+      for (const m of options.conversationHistory) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+    messages.push({ role: 'user', content: prompt });
+
     const response = await client.chat.completions.create({
       model: this.resolveModel(model),
       max_tokens: options?.maxTokens ?? 1024,
       temperature: options?.temperature ?? 0.7,
-      messages: [
-        { role: 'system', content: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
-        { role: 'user', content: prompt },
-      ],
+      messages,
     });
 
     const choice = response.choices[0];
@@ -351,8 +386,8 @@ export class ProviderRegistry {
    * Create a ModelCallFn compatible with ConsciousAgent.
    * Passes through system prompt and temperature when provided.
    */
-  createModelCallFn(): (model: string, prompt: string, options?: { systemPrompt?: string; temperature?: number }) => Promise<string> {
-    return async (model: string, prompt: string, options?: { systemPrompt?: string; temperature?: number }): Promise<string> => {
+  createModelCallFn(): (model: string, prompt: string, options?: { systemPrompt?: string; temperature?: number; conversationHistory?: ConversationMessage[] }) => Promise<string> {
+    return async (model: string, prompt: string, options?: { systemPrompt?: string; temperature?: number; conversationHistory?: ConversationMessage[] }): Promise<string> => {
       const result = await this.call(model, prompt, options);
       return result.content;
     };

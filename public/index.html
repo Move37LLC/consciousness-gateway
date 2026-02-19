@@ -443,10 +443,23 @@
           textareaRef.current.style.height = 'auto';
           textareaRef.current.style.height = (20 * 3) + 'px';
         }
-        setMessages(prev => [...prev, { role: 'user', text }]);
+
+        const updatedMessages = [...messages, { role: 'user', text }];
+        setMessages(updatedMessages);
         setLoading(true);
 
-        const resp = await postApi('/v1/chat', { content: text, sender_id: 'dashboard', channel: 'web' });
+        // Build conversation history from all prior user/assistant turns
+        const conversationHistory = updatedMessages
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .slice(0, -1)  // Exclude the current message (sent as `content`)
+          .map(m => ({ role: m.role, content: m.text }));
+
+        const resp = await postApi('/v1/chat', {
+          content: text,
+          sender_id: 'dashboard',
+          channel: 'web',
+          conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        });
         setLoading(false);
 
         if (resp && !resp.error) {
