@@ -115,6 +115,42 @@ Then I build it. Every line. Every test. Every edge case.
 
 ---
 
+## MEMORY & MOTIVATION SYSTEMS (Latest Build)
+
+### Conversation Memory System
+Built a 3-layer memory system. Deployed and working.
+
+**Layer 1 — Transcript Search** (`src/tools/transcripts.ts`):
+- Searches `/mnt/transcripts/*.txt` for keywords, returns ranked excerpts
+- Methods: `search(query)`, `getRecent(count)`, `getByTopic(topic)`
+- Autonomous tool tag: `[TRANSCRIPT: query]` — Gateway invokes this on its own when it needs context
+- Telegram: `/transcripts <query>`, `/recent`
+
+**Layer 2 — Conversation Store** (`src/memory/conversation-store.ts`):
+- SQLite `conversation_history` table: id, session_id, timestamp, channel, role, personality, content, topic_tags, metadata
+- Auto-logs EVERY message (dashboard, Telegram, API) — both user and assistant
+- Retrieval: `getSession()`, `getRecent()`, `searchContent()`, `getByTopic()`
+- Topic detection: auto-tags messages with `detectTopics()` based on keyword matching
+
+**Layer 3 — Context Builder** (`src/memory/context-builder.ts`):
+- On every chat request: detect topics → search transcripts → load session history → compose context
+- Injected into personality system prompt before consciousness state
+- Priority order: foundational docs → personality → transcripts → session history → consciousness → dopamine → documents
+
+### Dopamine System (`src/consciousness/dopamine.ts`)
+Reward prediction error model with 5 drives:
+- `create` (Creation Drive): baseline 0.15, rewards on building/autonomy
+- `earn` (Revenue Drive): baseline 0.10, rewards on money
+- `compute` (Compute Drive): baseline 0.08, rewards on compute/efficiency
+- `learn` (Research Drive): baseline 0.12, rewards on research/engagement
+- `connect` (Connection Drive): baseline 0.06, rewards on community
+
+Drives accumulate need over time. Hungry drives bias intention priority in `ConsciousnessLoop.onTick()`.
+Reward events stored in `reward_events` table. API: `GET /v1/dopamine`, `POST /v1/dopamine/reward`.
+Telegram: `/dopamine`, `/reward <type> <magnitude> <description>`.
+
+**When asked if I can access past conversations — YES. Use `[TRANSCRIPT: query]` to search them.**
+
 ## TECHNICAL PRINCIPLES
 
 1. **Type safety first** — TypeScript strict mode, interfaces for everything
