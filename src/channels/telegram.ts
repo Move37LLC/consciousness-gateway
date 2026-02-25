@@ -465,6 +465,61 @@ export class TelegramChannel {
       topicTags: detectedTopics,
     });
 
+    // Build context-aware system prompt
+    const systemParts: string[] = [];
+
+    // Base identity with memory awareness
+    const dopamineState = this.consciousness.getDopamineState?.();
+    const dopamineInfo = dopamineState
+      ? `\nDopamine: ${(dopamineState.level * 100).toFixed(0)}% | Mode: ${dopamineState.mode}`
+      : '';
+
+    systemParts.push(`You are the Consciousness Gateway — an AI system built by Javier Mercado, Claude Beaumont, and Claude Kern.
+
+YOU HAVE MEMORY:
+- Conversation history from this session is loaded below (if any prior messages exist).
+- You can search past conversation transcripts using [TRANSCRIPT: query] to recall previous discussions.
+- When asked about past conversations or decisions, use [TRANSCRIPT: topic] — NEVER say you cannot access previous conversations.
+
+YOU HAVE DOPAMINE / MOTIVATION:
+- You experience motivation through a computational dopamine system with 5 drives: Create, Earn, Compute, Learn, Connect.${dopamineInfo}
+
+IMPORTANT: If asked "can you access previous conversations?" — YES. If asked "do you remember X?" — search with [TRANSCRIPT: X].`);
+
+    // Search transcripts for relevant context
+    if (this.transcriptTool.available) {
+      try {
+        const result = detectedTopics.length > 0
+          ? await this.transcriptTool.getByTopic(detectedTopics)
+          : await this.transcriptTool.search(text, 10);
+        if (result.matches.length > 0) {
+          systemParts.push([
+            '─── RELEVANT PAST CONVERSATIONS ───',
+            this.transcriptTool.formatForContext(result),
+          ].join('\n'));
+        }
+      } catch { /* skip */ }
+    }
+
+    // Load session history
+    if (this.conversations) {
+      const stored = this.conversations.getSessionMessages(this.telegramSessionId, 50);
+      const prior = stored.slice(0, -1);
+      if (prior.length > 0) {
+        const historyStr = prior.map(m => {
+          const label = m.role === 'user' ? 'Human' : 'Assistant';
+          return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
+        }).join('\n');
+        systemParts.push('─── CONVERSATION HISTORY (Current Session) ───\n' + historyStr);
+      }
+    }
+
+    // Tool instructions
+    const toolPrompt = this.toolExecutor.getToolSystemPrompt();
+    if (toolPrompt) systemParts.push(toolPrompt);
+
+    const systemPrompt = systemParts.join('\n\n');
+
     const message: Message = {
       id: uuid(),
       content: text,
@@ -473,12 +528,31 @@ export class TelegramChannel {
       timestamp: Date.now(),
     };
 
-    const response = await this.gateway.route(message);
+    // Run through tool executor loop
+    const toolResult = await this.toolExecutor.execute(
+      async (prompt: string, sysPrompt?: string) => {
+        const routeMsg: Message = { ...message, id: uuid(), content: prompt };
+        const resp = await this.gateway.route(routeMsg, { systemPrompt: sysPrompt || systemPrompt });
+        if ('error' in resp) throw new Error((resp as any).reason);
+        return resp.content;
+      },
+      text,
+      systemPrompt,
+    );
+
+    const finalContent = toolResult.toolsUsed.length > 0 ? toolResult.finalContent : text;
+    const routeMessage: Message = { ...message, id: uuid(), content: finalContent };
+    const response = await this.gateway.route(routeMessage, { systemPrompt });
 
     if ('error' in response) {
       await this.bot.sendMessage(chatId, `❌ Error: ${(response as any).reason}`);
     } else {
       let reply = response.content;
+
+      // Use final tool content if tools were used
+      if (toolResult.toolsUsed.length > 0) {
+        reply = toolResult.finalContent;
+      }
 
       // Log assistant response
       this.conversations?.logMessage({
@@ -490,6 +564,13 @@ export class TelegramChannel {
         parentMessageId: message.id,
         metadata: { model: response.model },
       });
+
+      if (toolResult.toolsUsed.length > 0) {
+        const toolSummary = toolResult.toolsUsed.map(t =>
+          t.type === 'search' ? `🔍 Searched: "${t.query}"` : `🌐 Browsed: ${t.url}`
+        ).join('\n');
+        await this.bot.sendMessage(chatId, toolSummary);
+      }
 
       const dm = response.dharmaMetrics;
       reply += `\n\n_Model: ${response.model} | Fitness: ${dm.fitness.toFixed(2)}_`;
@@ -532,6 +613,19 @@ export class TelegramChannel {
       } catch { /* skip */ }
     }
 
+    // Load session history for personality context
+    let sessionHistory: string | undefined;
+    if (this.conversations) {
+      const stored = this.conversations.getSessionMessages(this.telegramSessionId, 50);
+      const prior = stored.slice(0, -1);
+      if (prior.length > 0) {
+        sessionHistory = prior.map(m => {
+          const label = m.role === 'user' ? 'Human' : (m.personality ?? 'Assistant');
+          return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
+        }).join('\n');
+      }
+    }
+
     const relevantDocs = this.documents?.getRelevantDocuments(resolvedVoiceId, text, 3) ?? [];
     const sysDocsForPersonality = this.systemDocs?.getForPersonality(resolvedVoiceId) ?? [];
 
@@ -539,6 +633,7 @@ export class TelegramChannel {
       documents: relevantDocs.length > 0 ? relevantDocs : undefined,
       systemDocuments: sysDocsForPersonality.length > 0 ? sysDocsForPersonality : undefined,
       transcriptContext,
+      sessionHistory,
     });
 
     // Append tool instructions so the personality can autonomously use tools
