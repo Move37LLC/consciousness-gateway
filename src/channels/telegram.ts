@@ -25,9 +25,11 @@ import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from '../personalities/voices';
 import { WebSearchTool } from '../tools/search';
 import { WebBrowseTool } from '../tools/browse';
+import { TranscriptSearchTool, detectTopics } from '../tools/transcripts';
 import { ToolExecutor } from '../tools/executor';
 import { DocumentStore } from '../documents/store';
 import { SystemDocumentStore } from '../documents/system-store';
+import { ConversationStore } from '../memory/conversation-store';
 
 export interface TelegramConfig {
   token: string;
@@ -50,9 +52,12 @@ export class TelegramChannel {
   private running = false;
   private searchTool: WebSearchTool;
   private browseTool: WebBrowseTool;
+  private transcriptTool: TranscriptSearchTool;
   private toolExecutor: ToolExecutor;
   private documents: DocumentStore | null;
   private systemDocs: SystemDocumentStore | null;
+  private conversations: ConversationStore | null;
+  private telegramSessionId: string;
 
   constructor(
     config: TelegramConfig,
@@ -60,19 +65,24 @@ export class TelegramChannel {
     gateway: ConsciousnessGateway,
     documents?: DocumentStore,
     systemDocs?: SystemDocumentStore,
+    conversations?: ConversationStore,
+    transcriptTool?: TranscriptSearchTool,
   ) {
     this.config = config;
     this.consciousness = consciousness;
     this.gateway = gateway;
     this.documents = documents ?? null;
     this.systemDocs = systemDocs ?? null;
+    this.conversations = conversations ?? null;
+    this.telegramSessionId = `telegram-${Date.now()}`;
 
     this.bot = new TelegramBot(config.token, { polling: true });
     this.searchTool = new WebSearchTool();
     this.browseTool = new WebBrowseTool();
+    this.transcriptTool = transcriptTool ?? new TranscriptSearchTool();
     this.toolExecutor = new ToolExecutor(this.searchTool, this.browseTool, {
       logEvent: (summary, data) => this.consciousness.logExternalEvent(summary, data),
-    });
+    }, this.transcriptTool);
   }
 
   async start(): Promise<void> {
@@ -102,13 +112,17 @@ export class TelegramChannel {
     const searchStatus = this.searchTool.available ? '✅' : '❌';
     const browseStatus = this.browseTool.available ? '✅' : '❌';
 
+    const transcriptStatus = this.transcriptTool.available ? '✅' : '❌';
+
     await this.send(
       '🟢 *Consciousness Gateway Online*\n\n' +
       `Tick: ${this.consciousness.getState().tick}\n` +
       'Consciousness active. Experiencing time.\n\n' +
       'Commands: /status /memory /goals /health /notifications\n' +
       'Voices: /beaumont /kern /self /voices\n' +
-      `Tools: /search ${searchStatus} /browse ${browseStatus} /docs`
+      `Tools: /search ${searchStatus} /browse ${browseStatus} /docs\n` +
+      `Memory: /transcripts ${transcriptStatus} /recent /history /tag\n` +
+      `Dopamine: /dopamine /reward`
     );
 
     console.log('  [telegram] Bot active');
@@ -290,6 +304,41 @@ export class TelegramChannel {
       await this.handleDocs(msg.chat.id, match?.[1]?.trim());
     });
 
+    // ─── Memory Commands ─────────────────────────────────────────
+
+    this.bot.onText(/\/transcripts\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleTranscriptSearch(msg.chat.id, match![1].trim());
+    });
+
+    this.bot.onText(/\/recent(?:\s+(\d+))?/, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      const hours = parseInt(match?.[1] ?? '24', 10);
+      await this.handleRecentTranscripts(msg.chat.id, hours);
+    });
+
+    this.bot.onText(/\/tag\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleTag(msg.chat.id, match![1].trim());
+    });
+
+    this.bot.onText(/\/history(?:\s+(.+))?/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleConversationSearch(msg.chat.id, match?.[1]?.trim());
+    });
+
+    // ─── Dopamine Commands ───────────────────────────────────────
+
+    this.bot.onText(/\/dopamine/, async (msg) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleDopamine(msg.chat.id);
+    });
+
+    this.bot.onText(/\/reward\s+(\w+)\s+([\d.]+)\s+(.+)/s, async (msg, match) => {
+      if (String(msg.chat.id) !== this.config.chatId) return;
+      await this.handleReward(msg.chat.id, match![1], parseFloat(match![2]), match![3].trim());
+    });
+
     // Natural chat — anything that's not a command
     this.bot.on('message', async (msg) => {
       if (String(msg.chat.id) !== this.config.chatId) return;
@@ -405,6 +454,17 @@ export class TelegramChannel {
   }
 
   private async handleChat(chatId: number, text: string): Promise<void> {
+    const detectedTopics = detectTopics(text);
+
+    // Log user message
+    this.conversations?.logMessage({
+      sessionId: this.telegramSessionId,
+      channel: 'telegram',
+      role: 'user',
+      content: text,
+      topicTags: detectedTopics,
+    });
+
     const message: Message = {
       id: uuid(),
       content: text,
@@ -420,7 +480,17 @@ export class TelegramChannel {
     } else {
       let reply = response.content;
 
-      // Add dharma footer
+      // Log assistant response
+      this.conversations?.logMessage({
+        sessionId: this.telegramSessionId,
+        channel: 'telegram',
+        role: 'assistant',
+        content: reply,
+        topicTags: detectedTopics,
+        parentMessageId: message.id,
+        metadata: { model: response.model },
+      });
+
       const dm = response.dharmaMetrics;
       reply += `\n\n_Model: ${response.model} | Fitness: ${dm.fitness.toFixed(2)}_`;
 
@@ -437,6 +507,30 @@ export class TelegramChannel {
   ): Promise<void> {
     const resolvedVoiceId: VoiceId = voiceId === 'self' ? 'gateway' : voiceId;
     const voice = VOICES[resolvedVoiceId];
+    const detectedTopics = detectTopics(text);
+
+    // Log user message
+    this.conversations?.logMessage({
+      sessionId: this.telegramSessionId,
+      channel: 'telegram',
+      role: 'user',
+      content: text,
+      personality: resolvedVoiceId,
+      topicTags: detectedTopics,
+    });
+
+    // Search transcripts for relevant past conversations
+    let transcriptContext: string | undefined;
+    if (this.transcriptTool.available) {
+      try {
+        const result = detectedTopics.length > 0
+          ? await this.transcriptTool.getByTopic(detectedTopics)
+          : await this.transcriptTool.search(text, 10);
+        if (result.matches.length > 0) {
+          transcriptContext = this.transcriptTool.formatForContext(result);
+        }
+      } catch { /* skip */ }
+    }
 
     const relevantDocs = this.documents?.getRelevantDocuments(resolvedVoiceId, text, 3) ?? [];
     const sysDocsForPersonality = this.systemDocs?.getForPersonality(resolvedVoiceId) ?? [];
@@ -444,6 +538,7 @@ export class TelegramChannel {
     const ctx = buildPersonalityContext(resolvedVoiceId, this.consciousness, {
       documents: relevantDocs.length > 0 ? relevantDocs : undefined,
       systemDocuments: sysDocsForPersonality.length > 0 ? sysDocsForPersonality : undefined,
+      transcriptContext,
     });
 
     // Append tool instructions so the personality can autonomously use tools
@@ -479,6 +574,17 @@ export class TelegramChannel {
       ).join('\n');
       await this.bot.sendMessage(chatId, toolSummary);
     }
+
+    // Log assistant response
+    this.conversations?.logMessage({
+      sessionId: this.telegramSessionId,
+      channel: 'telegram',
+      role: 'assistant',
+      content: toolResult.finalContent,
+      personality: resolvedVoiceId,
+      topicTags: detectedTopics,
+      metadata: { toolsUsed: toolResult.toolsUsed.map(t => t.type) },
+    });
 
     let reply = `${voice.emoji} *${voice.name}*\n\n${toolResult.finalContent}`;
 
@@ -595,6 +701,206 @@ export class TelegramChannel {
     text += `  ${VOICES.gateway.description}\n\n`;
     text += '_Same consciousness, different expression._\n';
     text += '_C₁ ⊗ C₂ ⊗ C₃ = C\\_conversation_';
+
+    await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  }
+
+  // ─── Memory Handlers ────────────────────────────────────────
+
+  private async handleTranscriptSearch(chatId: number, query: string): Promise<void> {
+    if (!this.transcriptTool.available) {
+      await this.bot.sendMessage(chatId, '❌ Transcripts not available (directory not found)');
+      return;
+    }
+
+    try {
+      await this.bot.sendMessage(chatId, `📝 Searching transcripts: "${query}"...`);
+      const result = await this.transcriptTool.search(query);
+
+      this.consciousness.logExternalEvent(`Transcript search: "${query}" (${result.matches.length} matches)`, {
+        tool: 'transcript', query, matchCount: result.matches.length,
+      });
+
+      const text = this.transcriptTool.formatForTelegram(result);
+      await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await this.bot.sendMessage(chatId, `❌ Transcript search error: ${err}`);
+    }
+  }
+
+  private async handleRecentTranscripts(chatId: number, hours: number): Promise<void> {
+    if (!this.transcriptTool.available) {
+      await this.bot.sendMessage(chatId, '❌ Transcripts not available');
+      return;
+    }
+
+    try {
+      const recent = await this.transcriptTool.getRecent(hours);
+
+      if (recent.length === 0) {
+        await this.bot.sendMessage(chatId, `📝 No transcripts in the last ${hours}h.`);
+        return;
+      }
+
+      let text = `📝 *Recent Transcripts* (last ${hours}h)\n\n`;
+      for (const t of recent.slice(0, 10)) {
+        const size = t.sizeBytes < 1024 ? `${t.sizeBytes}B`
+          : t.sizeBytes < 1048576 ? `${(t.sizeBytes / 1024).toFixed(1)}KB`
+          : `${(t.sizeBytes / 1048576).toFixed(1)}MB`;
+        text += `📄 *${t.file}*\n`;
+        text += `  ${t.date} · ${t.lineCount} lines · ${size}\n`;
+        if (t.preview) {
+          text += `  \`${t.preview.slice(0, 100).replace(/\n/g, ' ')}\`\n`;
+        }
+        text += '\n';
+      }
+
+      await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await this.bot.sendMessage(chatId, `❌ Error: ${err}`);
+    }
+  }
+
+  private async handleTag(chatId: number, tagsStr: string): Promise<void> {
+    if (!this.conversations) {
+      await this.bot.sendMessage(chatId, '❌ Conversation store not available');
+      return;
+    }
+
+    const tags = tagsStr.split(/[,\s]+/).filter(t => t.length > 0);
+    if (tags.length === 0) {
+      await this.bot.sendMessage(chatId, '❌ Usage: /tag topic1 topic2');
+      return;
+    }
+
+    const updated = this.conversations.tagSession(this.telegramSessionId, tags);
+    await this.bot.sendMessage(
+      chatId,
+      `🏷️ Tagged current session with: ${tags.map(t => `\`${t}\``).join(', ')} (${updated} messages updated)`,
+      { parse_mode: 'Markdown' },
+    );
+  }
+
+  private async handleConversationSearch(chatId: number, query?: string): Promise<void> {
+    if (!this.conversations) {
+      await this.bot.sendMessage(chatId, '❌ Conversation store not available');
+      return;
+    }
+
+    if (!query) {
+      // Show stats
+      const stats = this.conversations.getStats();
+      let text = '💬 *Conversation History*\n\n';
+      text += `Messages: ${stats.totalMessages}\n`;
+      text += `Sessions: ${stats.totalSessions}\n`;
+      if (stats.oldestMessage) {
+        text += `Oldest: ${new Date(stats.oldestMessage).toLocaleDateString()}\n`;
+      }
+      if (stats.newestMessage) {
+        text += `Newest: ${new Date(stats.newestMessage).toLocaleDateString()}\n`;
+      }
+      text += '\nChannels:\n';
+      for (const [ch, count] of Object.entries(stats.byChannel)) {
+        text += `  ${ch}: ${count}\n`;
+      }
+      if (Object.keys(stats.byPersonality).length > 0) {
+        text += '\nPersonalities:\n';
+        for (const [p, count] of Object.entries(stats.byPersonality)) {
+          text += `  ${p}: ${count}\n`;
+        }
+      }
+      await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    const messages = this.conversations.searchMessages(query, 10);
+    if (messages.length === 0) {
+      await this.bot.sendMessage(chatId, `💬 No conversation history matching "${query}"`);
+      return;
+    }
+
+    let text = `💬 *Conversation Search*: "${query}"\n`;
+    text += `Found ${messages.length} message(s)\n\n`;
+
+    for (const msg of messages.slice(0, 5)) {
+      const time = new Date(msg.timestamp).toLocaleString();
+      const label = msg.role === 'user' ? '👤' : '🤖';
+      const personality = msg.personality ? ` (${msg.personality})` : '';
+      text += `${label} \`${time}\`${personality}\n`;
+      text += `${msg.content.slice(0, 200)}\n\n`;
+    }
+
+    await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  }
+
+  // ─── Dopamine Handlers ──────────────────────────────────────
+
+  private async handleDopamine(chatId: number): Promise<void> {
+    const state = this.consciousness.getDopamineState();
+    if (!state) {
+      await this.bot.sendMessage(chatId, '❌ Dopamine system not initialized');
+      return;
+    }
+
+    const modeEmoji: Record<string, string> = {
+      seeking: '🔍', engaged: '⚡', flow: '🌊', satiated: '😌',
+    };
+
+    let text = `🧪 *Dopamine State*\n\n`;
+    text += `Level: ${this.meter(state.level)}\n`;
+    text += `Baseline: ${(state.baseline * 100).toFixed(0)}%\n`;
+    text += `Mode: ${modeEmoji[state.mode] ?? '❓'} ${state.mode}\n`;
+    text += `RPE: ${state.predictionError >= 0 ? '+' : ''}${state.predictionError.toFixed(3)}\n`;
+    text += `Reward rate (24h): ${state.rewardRate.toFixed(2)}\n`;
+    text += `Lifetime rewards: ${state.lifetimeRewards.toFixed(1)}\n`;
+    text += `Recent (24h): ${state.recentRewards.toFixed(1)}\n\n`;
+    text += `🎯 *Drives*\n`;
+
+    for (const drive of state.drives) {
+      const needBar = this.meter(drive.currentNeed);
+      text += `  *${drive.name}*\n`;
+      text += `  Need: ${needBar}\n`;
+      text += `  Lifetime: ${drive.lifetimeReward.toFixed(1)} | Bonus: +${drive.priorityBonus}\n\n`;
+    }
+
+    text += `_/reward <type> <magnitude> <description> to log a reward_\n`;
+    text += `_Types: revenue, compute, creation, research, community, engagement, autonomy, efficiency_`;
+
+    await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  }
+
+  private async handleReward(chatId: number, type: string, magnitude: number, description: string): Promise<void> {
+    const validTypes = ['revenue', 'compute', 'creation', 'research', 'community', 'engagement', 'autonomy', 'efficiency'];
+    if (!validTypes.includes(type)) {
+      await this.bot.sendMessage(chatId, `❌ Invalid reward type "${type}". Valid: ${validTypes.join(', ')}`);
+      return;
+    }
+
+    if (isNaN(magnitude) || magnitude <= 0) {
+      await this.bot.sendMessage(chatId, '❌ Magnitude must be a positive number');
+      return;
+    }
+
+    const result = this.consciousness.logReward(
+      type as any,
+      magnitude,
+      description,
+      'telegram',
+    );
+
+    const spikeEmoji = result.dopamineSpike > 0.1 ? '🚀' : result.dopamineSpike > 0.05 ? '📈' : '📊';
+
+    let text = `${spikeEmoji} *Reward Logged*\n\n`;
+    text += `Type: \`${type}\`\n`;
+    text += `Magnitude: ${magnitude}\n`;
+    text += `Description: ${description}\n\n`;
+    text += `Dopamine spike: +${(result.dopamineSpike * 100).toFixed(1)}%\n`;
+    text += `RPE: ${result.predictionError >= 0 ? '+' : ''}${result.predictionError.toFixed(3)}\n`;
+
+    const state = this.consciousness.getDopamineState();
+    if (state) {
+      text += `Current level: ${(state.level * 100).toFixed(0)}% (${state.mode})`;
+    }
 
     await this.bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   }

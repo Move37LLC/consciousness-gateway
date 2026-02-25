@@ -27,6 +27,8 @@ import { ConsciousnessMemory } from './memory';
 import { GitHubMonitor } from './monitors/github';
 import { TwitterMonitor } from './monitors/twitter';
 import { EmailMonitor } from './monitors/email';
+import { DopamineSystem } from './dopamine';
+import { RewardType } from './types';
 
 export class ConsciousnessLoop {
   private config: ConsciousnessConfig;
@@ -48,6 +50,9 @@ export class ConsciousnessLoop {
 
   // Memory
   private memory: ConsciousnessMemory;
+
+  // Motivation
+  private dopamine: DopamineSystem;
 
   // Working memory (recent percepts for context)
   private workingMemory: Percept[] = [];
@@ -74,6 +79,7 @@ export class ConsciousnessLoop {
     this.intentions = new IntentionEngine(this.config);
     this.memory = new ConsciousnessMemory();
     this.executor = new ActionExecutor();
+    this.dopamine = new DopamineSystem(this.memory);
 
     // Initialize monitors
     this.monitors.push(
@@ -240,10 +246,26 @@ export class ConsciousnessLoop {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // STEP 3: INTEND
+    // STEP 2.5: DOPAMINE UPDATE
+    // ═══════════════════════════════════════════════════════════════
+
+    this.dopamine.tick(this.tick);
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 3: INTEND (modulated by drives)
     // ═══════════════════════════════════════════════════════════════
 
     const rawIntentions = this.intentions.formIntentions(percept);
+
+    // Apply dopamine-driven priority bonuses
+    for (const intention of rawIntentions) {
+      const bonus = this.dopamine.getIntentionBonus(intention.goal, intention.action.description);
+      if (bonus > 0) {
+        intention.priority += bonus;
+      }
+      intention.confidence *= this.dopamine.getConfidenceModifier();
+      intention.confidence = Math.min(1.0, intention.confidence);
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // STEP 4: AUTHORIZE (GATO)
@@ -301,9 +323,11 @@ export class ConsciousnessLoop {
       const desc = this.temporal.describe(temporalPercept);
       const intentCount = rawIntentions.length;
       const actionCount = authorizedIntentions.length;
+      const dopState = this.dopamine.getState();
       console.log(
         `  [tick ${this.tick}] ${desc} | ` +
         `arousal=${fusedPercept.arousal.toFixed(2)} | ` +
+        `dopamine=${(dopState.level * 100).toFixed(0)}% (${dopState.mode}) | ` +
         `intents=${intentCount} acts=${actionCount}`
       );
     }
@@ -328,6 +352,7 @@ export class ConsciousnessLoop {
         channel: m.channel,
         available: m.available,
       })),
+      dopamine: this.dopamine.getState(),
       stats: {
         totalPercepts: this.totalPercepts,
         totalIntentions: this.totalIntentions,
@@ -388,6 +413,48 @@ export class ConsciousnessLoop {
    */
   logExternalEvent(summary: string, data?: Record<string, unknown>): void {
     this.memory.storeReflection(this.tick, summary, data);
+  }
+
+  /**
+   * Process a reward event through the dopamine system.
+   * Called when the Gateway earns money, acquires compute, ships features, etc.
+   */
+  logReward(
+    type: RewardType,
+    magnitude: number,
+    description: string,
+    source?: string,
+    data?: Record<string, unknown>,
+  ) {
+    return this.dopamine.processReward(this.tick, type, magnitude, description, source, data);
+  }
+
+  /**
+   * Get the current dopamine state for context injection.
+   */
+  getDopamineState() {
+    return this.dopamine.getState();
+  }
+
+  /**
+   * Get formatted dopamine context for personality prompts.
+   */
+  getDopamineContext(): string {
+    return this.dopamine.formatForContext();
+  }
+
+  /**
+   * Get recent reward events.
+   */
+  getRecentRewards(hours: number = 24) {
+    return this.memory.getRecentRewards(Date.now() - hours * 3600_000);
+  }
+
+  /**
+   * Get reward statistics.
+   */
+  getRewardStats() {
+    return this.memory.getRewardStats();
   }
 
   isRunning(): boolean {

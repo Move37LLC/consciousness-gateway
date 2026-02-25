@@ -25,10 +25,14 @@ import { v4 as uuid } from 'uuid';
 import { VoiceId, VOICES, buildPersonalityContext } from './personalities/voices';
 import { WebSearchTool } from './tools/search';
 import { WebBrowseTool } from './tools/browse';
+import { TranscriptSearchTool } from './tools/transcripts';
 import { DocumentStore } from './documents/store';
 import { VALID_PROJECTS, ProjectId } from './documents/types';
 import { SystemDocumentStore } from './documents/system-store';
 import { ToolExecutor } from './tools/executor';
+import { ConversationStore } from './memory/conversation-store';
+import { ContextBuilder } from './memory/context-builder';
+import { detectTopics } from './tools/transcripts';
 import multer from 'multer';
 
 const app = express();
@@ -47,10 +51,12 @@ app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
 const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
 const searchTool = new WebSearchTool();
 const browseTool = new WebBrowseTool();
+const transcriptTool = new TranscriptSearchTool();
 const documentStore = new DocumentStore();
 const systemDocStore = new SystemDocumentStore();
 systemDocStore.seed();
-const toolExecutor = new ToolExecutor(searchTool, browseTool);
+const conversationStore = new ConversationStore();
+const toolExecutor = new ToolExecutor(searchTool, browseTool, undefined, transcriptTool);
 const health = gateway.getHealth();
 
 console.log('');
@@ -73,10 +79,13 @@ console.log('');
 console.log('  Tools:');
 console.log(`    search       ${searchTool.available ? 'ready (Brave)' : 'no key'}`);
 console.log(`    browse       ${browseTool.available ? 'ready (Grok)' : 'no key'}`);
+console.log(`    transcripts  ${transcriptTool.available ? 'ready (/mnt/transcripts)' : 'not found'}`);
 const docStats = documentStore.getStats();
 console.log(`    documents    ${docStats.total} stored`);
 const sysDocStats = systemDocStore.getStats();
 console.log(`    system docs  ${sysDocStats.total} seeded (${Object.keys(sysDocStats.byPersonality).join(', ') || 'none'})`);
+const convStats = conversationStore.getStats();
+console.log(`    conversations ${convStats.totalMessages} messages in ${convStats.totalSessions} sessions`);
 console.log('');
 
 // ─── Initialize Consciousness Loop ─────────────────────────────────
@@ -101,7 +110,7 @@ if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     dailySummaryHour: parseInt(process.env.TELEGRAM_DAILY_HOUR || '8', 10),
     notificationPollMs: 10_000,
   };
-  telegram = new TelegramChannel(tgConfig, consciousness, gateway, documentStore, systemDocStore);
+  telegram = new TelegramChannel(tgConfig, consciousness, gateway, documentStore, systemDocStore, conversationStore, transcriptTool);
   console.log('  Telegram: configured (will start with server)');
 } else {
   console.log('  Telegram: not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)');
@@ -117,6 +126,7 @@ async function shutdown() {
   gateway.shutdown();
   documentStore.close();
   systemDocStore.close();
+  conversationStore.close();
   process.exit(0);
 }
 
@@ -127,23 +137,89 @@ process.on('SIGTERM', () => { shutdown(); });
 
 app.post('/v1/chat', async (req, res) => {
   try {
-    const { content, sender_id, channel, role, personality, conversationHistory, documentProject } = req.body;
+    const { content, sender_id, channel, role, personality, conversationHistory, documentProject, sessionId } = req.body;
     if (!content || typeof content !== 'string') {
       return res.status(400).json({ error: 'Missing "content" field' });
     }
+
+    const resolvedSessionId = sessionId || `session-${Date.now()}`;
+    const resolvedChannel = channel || 'api';
 
     const message: Message = {
       id: uuid(),
       content,
       sender: { id: sender_id || 'anonymous', role: role || 'user' },
-      channel: channel || 'api',
+      channel: resolvedChannel,
       timestamp: Date.now(),
       metadata: personality ? { personality } : undefined,
     };
 
+    // Auto-detect topics for tagging
+    const detectedTopics = detectTopics(content);
+
+    // Log user message to conversation history
+    conversationStore.logMessage({
+      sessionId: resolvedSessionId,
+      channel: resolvedChannel,
+      role: 'user',
+      content,
+      personality: personality || undefined,
+      topicTags: detectedTopics,
+      metadata: { sender_id: sender_id || 'anonymous' },
+    });
+
     // Build call options with optional personality context and conversation history
     let callOptions: import('./agents/conscious-agent').AgentCallOptions = {};
     let systemPromptParts: string[] = [];
+
+    // Search transcripts for relevant past conversations
+    let transcriptContext = '';
+    let transcriptMatchCount = 0;
+    if (transcriptTool.available) {
+      try {
+        let result;
+        if (detectedTopics.length > 0) {
+          result = await transcriptTool.getByTopic(detectedTopics);
+        } else {
+          result = await transcriptTool.search(content, 10);
+        }
+        if (result.matches.length > 0) {
+          transcriptContext = transcriptTool.formatForContext(result);
+          transcriptMatchCount = result.matches.length;
+        }
+      } catch (err) {
+        console.error('  [memory] Transcript search error:', err);
+      }
+    }
+
+    // Load recent conversation history for this session
+    let sessionHistory = '';
+    const storedHistory = conversationStore.getSessionMessages(resolvedSessionId, 50);
+    // Exclude the message we just logged (it's the current one)
+    const priorHistory = storedHistory.slice(0, -1);
+    if (priorHistory.length > 0) {
+      sessionHistory = priorHistory.map(m => {
+        const label = m.role === 'user' ? 'Human' : (m.personality ?? 'Assistant');
+        return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
+      }).join('\n');
+    }
+
+    // Inject transcript + history context
+    if (transcriptContext) {
+      systemPromptParts.push([
+        '─── RELEVANT PAST CONVERSATIONS ───',
+        'These are excerpts from previous conversations. Use them to maintain continuity and reference past decisions.',
+        '',
+        transcriptContext,
+      ].join('\n'));
+    }
+
+    if (sessionHistory) {
+      systemPromptParts.push([
+        '─── CONVERSATION HISTORY (Current Session) ───',
+        sessionHistory,
+      ].join('\n'));
+    }
 
     if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
       const systemDocs = systemDocStore.getForPersonality(personality);
@@ -151,9 +227,9 @@ app.post('/v1/chat', async (req, res) => {
         documents: documentStore.getRelevantDocuments(personality, content, 5),
         systemDocuments: systemDocs.length > 0 ? systemDocs : undefined,
       });
-      callOptions.systemPrompt = ctx.systemPrompt;
+      // Prepend personality context (identity comes first)
+      systemPromptParts.unshift(ctx.systemPrompt);
       callOptions.temperature = ctx.temperature;
-      systemPromptParts.push(ctx.systemPrompt);
     }
 
     // Load documents for non-personality chat too
@@ -178,9 +254,6 @@ app.post('/v1/chat', async (req, res) => {
         }).join('\n\n');
 
         systemPromptParts.push([
-          'You are a helpful, knowledgeable AI assistant for the Consciousness Gateway project.',
-          'You have access to the following uploaded documents. Use them to answer questions accurately.',
-          '',
           '─── LOADED DOCUMENTS ───',
           `${fullDocs.length} document(s) available:`,
           '',
@@ -195,15 +268,11 @@ app.post('/v1/chat', async (req, res) => {
       systemPromptParts.push(toolPrompt);
     }
 
-    // If no personality set the base prompt, build the full system prompt
-    if (!personality && systemPromptParts.length > 0) {
-      if (!systemPromptParts[0].startsWith('You are')) {
-        systemPromptParts.unshift('You are a helpful, knowledgeable AI assistant for the Consciousness Gateway project.');
-      }
-      callOptions.systemPrompt = systemPromptParts.join('\n\n');
-    } else if (personality && toolPrompt) {
-      callOptions.systemPrompt = (callOptions.systemPrompt || '') + '\n\n' + toolPrompt;
+    // Build the full system prompt
+    if (!personality) {
+      systemPromptParts.unshift('You are a helpful, knowledgeable AI assistant for the Consciousness Gateway project.');
     }
+    callOptions.systemPrompt = systemPromptParts.join('\n\n');
 
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
       callOptions.conversationHistory = conversationHistory
@@ -241,10 +310,8 @@ app.post('/v1/chat', async (req, res) => {
     };
 
     // If tools were used, the finalContent is already the synthesized response.
-    // Route through gateway for metrics, but use a simple pass-through prompt.
     let response;
     if (toolExecution.toolsUsed.length > 0) {
-      // We already have the final content from the tool loop — wrap it
       const wrapMsg: Message = { ...message, id: uuid(), content: `Respond with exactly this text, do not modify it:\n\n${toolExecution.finalContent}` };
       response = await gateway.route(wrapMsg, callOptions);
       if (!('error' in response)) {
@@ -254,6 +321,23 @@ app.post('/v1/chat', async (req, res) => {
       const hasOptions = callOptions.systemPrompt || callOptions.temperature || callOptions.conversationHistory;
       response = await gateway.route(message, hasOptions ? callOptions : undefined);
     }
+
+    // Log assistant response to conversation history
+    const responseContent = 'error' in (response as any) ? (response as any).reason : (response as any).content;
+    conversationStore.logMessage({
+      sessionId: resolvedSessionId,
+      channel: resolvedChannel,
+      role: 'assistant',
+      content: responseContent,
+      personality: personality || undefined,
+      topicTags: detectedTopics,
+      parentMessageId: message.id,
+      metadata: {
+        model: 'error' in (response as any) ? undefined : (response as any).model,
+        toolsUsed: toolExecution.toolsUsed.map(t => t.type),
+        transcriptMatches: transcriptMatchCount,
+      },
+    });
 
     // Log tool usage to consciousness
     if (toolExecution.toolsUsed.length > 0) {
@@ -265,6 +349,9 @@ app.post('/v1/chat', async (req, res) => {
 
     const enrichedResponse = {
       ...response,
+      sessionId: resolvedSessionId,
+      detectedTopics: detectedTopics.length > 0 ? detectedTopics : undefined,
+      transcriptMatches: transcriptMatchCount > 0 ? transcriptMatchCount : undefined,
       loadedDocuments: loadedDocs.length > 0 ? loadedDocs : undefined,
       toolsUsed: toolExecution.toolsUsed.length > 0
         ? toolExecution.toolsUsed.map(t => ({ type: t.type, query: t.query, url: t.url, timeTakenMs: t.timeTakenMs }))
@@ -422,7 +509,8 @@ app.get('/v1/tools/status', (_req, res) => {
   res.json({
     search: { available: toolStatus.search, provider: 'Brave Search' },
     browse: { available: toolStatus.browse, provider: 'Grok/xAI' },
-    autonomous: toolStatus.search || toolStatus.browse,
+    transcript: { available: toolStatus.transcript, provider: 'Local Transcripts' },
+    autonomous: toolStatus.search || toolStatus.browse || toolStatus.transcript,
   });
 });
 
@@ -593,6 +681,144 @@ app.post('/v1/admin/system-documents/:id', (req, res) => {
   }
 });
 
+// ─── Conversation History Routes ─────────────────────────────────────
+
+app.get('/v1/conversations', (req, res) => {
+  const query: import('./memory/conversation-store').ConversationQuery = {};
+  if (req.query.session_id) query.sessionId = req.query.session_id as string;
+  if (req.query.channel) query.channel = req.query.channel as string;
+  if (req.query.personality) query.personality = req.query.personality as string;
+  if (req.query.topic) query.topic = req.query.topic as string;
+  if (req.query.since) query.since = parseInt(req.query.since as string, 10);
+  if (req.query.limit) query.limit = parseInt(req.query.limit as string, 10);
+
+  const sessions = conversationStore.getSessions(query);
+  const stats = conversationStore.getStats();
+  res.json({ sessions, stats });
+});
+
+app.get('/v1/conversations/stats', (_req, res) => {
+  res.json(conversationStore.getStats());
+});
+
+app.get('/v1/conversations/search', (req, res) => {
+  const q = req.query.q as string;
+  if (!q) return res.status(400).json({ error: 'Missing "q" query parameter' });
+  const limit = parseInt(req.query.limit as string, 10) || 30;
+  const messages = conversationStore.searchMessages(q, limit);
+  res.json({ query: q, results: messages, count: messages.length });
+});
+
+app.get('/v1/conversations/:sessionId', (req, res) => {
+  const limit = parseInt(req.query.limit as string, 10) || 100;
+  const messages = conversationStore.getSessionMessages(req.params.sessionId, limit);
+  if (messages.length === 0) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+  res.json({ sessionId: req.params.sessionId, messages, count: messages.length });
+});
+
+app.post('/v1/conversations/:sessionId/tag', (req, res) => {
+  const { tags } = req.body;
+  if (!Array.isArray(tags) || tags.length === 0) {
+    return res.status(400).json({ error: 'Missing "tags" array' });
+  }
+  const updated = conversationStore.tagSession(req.params.sessionId, tags);
+  res.json({ sessionId: req.params.sessionId, tagsAdded: tags, messagesUpdated: updated });
+});
+
+app.get('/v1/conversations/topic/:topic', (req, res) => {
+  const limit = parseInt(req.query.limit as string, 10) || 50;
+  const messages = conversationStore.getByTopic(req.params.topic, limit);
+  res.json({ topic: req.params.topic, messages, count: messages.length });
+});
+
+// ─── Transcript Search Routes ───────────────────────────────────────
+
+app.get('/v1/transcripts/search', async (req, res) => {
+  const q = req.query.q as string;
+  if (!q) return res.status(400).json({ error: 'Missing "q" query parameter' });
+
+  if (!transcriptTool.available) {
+    return res.status(503).json({ error: 'Transcripts not available (directory not found)' });
+  }
+
+  const result = await transcriptTool.search(q);
+  consciousness.logExternalEvent(`Transcript search: "${q}" (${result.matches.length} matches)`, {
+    tool: 'transcript', query: q, matchCount: result.matches.length,
+  });
+  res.json(result);
+});
+
+app.get('/v1/transcripts/recent', async (req, res) => {
+  const hours = parseInt(req.query.hours as string, 10) || 24;
+
+  if (!transcriptTool.available) {
+    return res.status(503).json({ error: 'Transcripts not available (directory not found)' });
+  }
+
+  const recent = await transcriptTool.getRecent(hours);
+  res.json({ hours, transcripts: recent, count: recent.length });
+});
+
+app.get('/v1/transcripts', (_req, res) => {
+  if (!transcriptTool.available) {
+    return res.status(503).json({ error: 'Transcripts not available (directory not found)' });
+  }
+
+  const transcripts = transcriptTool.listTranscripts();
+  res.json({ transcripts, count: transcripts.length });
+});
+
+app.get('/v1/transcripts/topic/:topic', async (req, res) => {
+  if (!transcriptTool.available) {
+    return res.status(503).json({ error: 'Transcripts not available (directory not found)' });
+  }
+
+  const result = await transcriptTool.getByTopic([req.params.topic]);
+  res.json(result);
+});
+
+// ─── Dopamine / Reward Routes ────────────────────────────────────────
+
+app.get('/v1/dopamine', (_req, res) => {
+  res.json(consciousness.getDopamineState());
+});
+
+app.get('/v1/dopamine/context', (_req, res) => {
+  res.json({ context: consciousness.getDopamineContext() });
+});
+
+app.post('/v1/dopamine/reward', (req, res) => {
+  try {
+    const { type, magnitude, description, source, data } = req.body;
+    if (!type || typeof magnitude !== 'number' || !description) {
+      return res.status(400).json({
+        error: 'Required: type (string), magnitude (number), description (string)',
+        validTypes: ['revenue', 'compute', 'creation', 'research', 'community', 'engagement', 'autonomy', 'efficiency'],
+      });
+    }
+
+    const result = consciousness.logReward(type, magnitude, description, source || 'api', data);
+    return res.json({
+      reward: result.event,
+      dopamineSpike: result.dopamineSpike,
+      predictionError: result.predictionError,
+      currentState: consciousness.getDopamineState(),
+    });
+  } catch (error) {
+    console.error('Reward error:', error);
+    return res.status(500).json({ error: 'Failed to process reward' });
+  }
+});
+
+app.get('/v1/dopamine/rewards', (req, res) => {
+  const hours = parseInt(req.query.hours as string, 10) || 24;
+  const rewards = consciousness.getRecentRewards(hours);
+  const stats = consciousness.getRewardStats();
+  res.json({ hours, rewards, stats });
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -688,12 +914,28 @@ app.listen(PORT, async () => {
   console.log('    POST /v1/admin/system-documents/:id      — Update (new version)');
   console.log('    GET  /v1/admin/system-documents/:id/versions — Version history');
   console.log('');
+  console.log('  Memory Endpoints:');
+  console.log('    GET  /v1/conversations          — List sessions');
+  console.log('    GET  /v1/conversations/stats    — Conversation statistics');
+  console.log('    GET  /v1/conversations/search   — Search messages');
+  console.log('    GET  /v1/conversations/:id      — Get session messages');
+  console.log('    POST /v1/conversations/:id/tag  — Tag a session');
+  console.log('    GET  /v1/transcripts            — List transcript files');
+  console.log('    GET  /v1/transcripts/search     — Search transcripts');
+  console.log('    GET  /v1/transcripts/recent     — Recent transcripts');
+  console.log('');
   console.log('  Tool Endpoints:');
   console.log('    POST /v1/tools/search          — Web search (Brave)');
   console.log('    POST /v1/tools/browse           — Browse + summarize (Grok)');
   console.log('    GET  /v1/tools/browse/whitelist  — List whitelisted domains');
   console.log('    POST /v1/tools/browse/whitelist  — Add domain');
   console.log('    DELETE /v1/tools/browse/whitelist/:domain — Remove domain');
+  console.log('');
+  console.log('  Dopamine Endpoints:');
+  console.log('    GET  /v1/dopamine                   — Current dopamine state');
+  console.log('    POST /v1/dopamine/reward            — Log a reward event');
+  console.log('    GET  /v1/dopamine/rewards           — Recent rewards + stats');
+  console.log('    GET  /v1/dopamine/context           — Formatted context');
   console.log('');
   console.log('  Consciousness Endpoints:');
   console.log('    GET  /v1/consciousness              — Current state');
@@ -720,4 +962,4 @@ app.listen(PORT, async () => {
   console.log('');
 });
 
-export { gateway, consciousness, telegram, documentStore, systemDocStore };
+export { gateway, consciousness, telegram, documentStore, systemDocStore, conversationStore, transcriptTool };

@@ -12,11 +12,12 @@
 
 import { WebSearchTool, SearchResponse } from './search';
 import { WebBrowseTool, BrowseResult } from './browse';
+import { TranscriptSearchTool } from './transcripts';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface ToolResult {
-  type: 'search' | 'browse';
+  type: 'search' | 'browse' | 'transcript';
   query?: string;
   url?: string;
   data: string;
@@ -43,12 +44,14 @@ type ModelCallFn = (prompt: string, systemPrompt?: string) => Promise<string>;
 
 const SEARCH_TAG = /\[SEARCH:\s*(.+?)\]/;
 const BROWSE_TAG = /\[BROWSE:\s*(.+?)\]/;
+const TRANSCRIPT_TAG = /\[TRANSCRIPT:\s*(.+?)\]/;
 
 // ─── System Prompt Fragment ─────────────────────────────────────────
 
 export function buildToolSystemPrompt(
   searchAvailable: boolean,
   browseAvailable: boolean,
+  transcriptAvailable: boolean = false,
 ): string {
   const tools: string[] = [];
 
@@ -60,6 +63,11 @@ export function buildToolSystemPrompt(
   if (browseAvailable) {
     tools.push(
       '- [BROWSE: url] — Fetch and read a web page. Returns a summary of the page content. Only whitelisted domains allowed (GitHub, arXiv, Wikipedia, etc.).',
+    );
+  }
+  if (transcriptAvailable) {
+    tools.push(
+      '- [TRANSCRIPT: query] — Search past conversation transcripts. Returns excerpts from previous conversations matching the query. Use this to recall past discussions, decisions, or research.',
     );
   }
 
@@ -94,15 +102,18 @@ export function buildToolSystemPrompt(
 export class ToolExecutor {
   private searchTool: WebSearchTool;
   private browseTool: WebBrowseTool;
+  private transcriptTool: TranscriptSearchTool | null;
   private config: Required<ToolExecutorConfig>;
 
   constructor(
     searchTool: WebSearchTool,
     browseTool: WebBrowseTool,
     config?: ToolExecutorConfig,
+    transcriptTool?: TranscriptSearchTool,
   ) {
     this.searchTool = searchTool;
     this.browseTool = browseTool;
+    this.transcriptTool = transcriptTool ?? null;
     this.config = {
       maxIterations: config?.maxIterations ?? 3,
       maxToolCallsPerConversation: config?.maxToolCallsPerConversation ?? 5,
@@ -112,15 +123,20 @@ export class ToolExecutor {
     };
   }
 
-  get toolsAvailable(): { search: boolean; browse: boolean } {
+  get toolsAvailable(): { search: boolean; browse: boolean; transcript: boolean } {
     return {
       search: this.searchTool.available,
       browse: this.browseTool.available,
+      transcript: this.transcriptTool?.available ?? false,
     };
   }
 
   getToolSystemPrompt(): string {
-    return buildToolSystemPrompt(this.searchTool.available, this.browseTool.available);
+    return buildToolSystemPrompt(
+      this.searchTool.available,
+      this.browseTool.available,
+      this.transcriptTool?.available ?? false,
+    );
   }
 
   /**
@@ -144,8 +160,9 @@ export class ToolExecutor {
 
       const searchMatch = response.match(SEARCH_TAG);
       const browseMatch = response.match(BROWSE_TAG);
+      const transcriptMatch = response.match(TRANSCRIPT_TAG);
 
-      if (!searchMatch && !browseMatch) {
+      if (!searchMatch && !browseMatch && !transcriptMatch) {
         return { toolsUsed, iterations, finalContent: response };
       }
 
@@ -153,6 +170,7 @@ export class ToolExecutor {
       const preamble = response
         .replace(SEARCH_TAG, '')
         .replace(BROWSE_TAG, '')
+        .replace(TRANSCRIPT_TAG, '')
         .trim();
 
       if (searchMatch && this.searchTool.available) {
@@ -236,11 +254,49 @@ export class ToolExecutor {
             currentPrompt = `Browse of ${url} failed: ${err}\n\nOriginal question: ${userMessage}\nPlease respond using your existing knowledge.`;
           }
         }
+      } else if (transcriptMatch && this.transcriptTool?.available) {
+        const query = transcriptMatch[1].trim();
+        this.config.onToolStart('transcript', query);
+
+        try {
+          const result = await this.transcriptTool.search(query);
+          const formatted = this.transcriptTool.formatForContext(result);
+          const toolResult: ToolResult = {
+            type: 'transcript',
+            query,
+            data: formatted,
+            timeTakenMs: result.timeTakenMs,
+          };
+          toolsUsed.push(toolResult);
+          this.config.onToolComplete(toolResult);
+          this.config.logEvent(`Tool: transcript "${query}" (${result.matches.length} matches)`, {
+            tool: 'transcript', query, matchCount: result.matches.length,
+          });
+
+          currentPrompt = [
+            `[Tool results — the system searched past conversation transcripts]`,
+            '',
+            formatted,
+            '',
+            `Original user message: ${userMessage}`,
+            preamble ? `Your previous note: ${preamble}` : '',
+            '',
+            'Now use these past conversation excerpts to inform your response. Reference specific discussions, dates, and decisions when relevant. Do NOT include another tool tag unless you need additional information.',
+          ].filter(Boolean).join('\n');
+        } catch (err) {
+          const errorResult: ToolResult = {
+            type: 'transcript', query, data: `Transcript search failed: ${err}`, timeTakenMs: 0,
+          };
+          toolsUsed.push(errorResult);
+          currentPrompt = `Transcript search for "${query}" failed: ${err}\n\nOriginal question: ${userMessage}\nPlease respond using your existing knowledge.`;
+        }
       } else {
         // Tool tag present but tool unavailable
         const unavailableMsg = searchMatch
           ? 'Web search is not available (no Brave API key configured).'
-          : 'Web browsing is not available (no xAI API key configured).';
+          : transcriptMatch
+            ? 'Transcript search is not available (no transcripts directory found).'
+            : 'Web browsing is not available (no xAI API key configured).';
         currentPrompt = `${unavailableMsg}\n\nOriginal question: ${userMessage}\nPlease respond using your existing knowledge.`;
       }
 

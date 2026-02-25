@@ -16,7 +16,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { MemoryEntry, Percept, Intention, ActionResult } from './types';
+import { MemoryEntry, Percept, Intention, ActionResult, RewardEvent, RewardType } from './types';
 
 export class ConsciousnessMemory {
   private db: Database.Database;
@@ -69,6 +69,20 @@ export class ConsciousnessMemory {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+
+      CREATE TABLE IF NOT EXISTS reward_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        magnitude REAL NOT NULL,
+        description TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'system',
+        data TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_reward_timestamp ON reward_events(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_reward_type ON reward_events(type);
     `);
   }
 
@@ -187,6 +201,91 @@ export class ConsciousnessMemory {
 
   markAllNotificationsRead(): void {
     this.db.prepare('UPDATE notifications SET read = 1 WHERE read = 0').run();
+  }
+
+  // ─── Reward Operations ───────────────────────────────────────────
+
+  storeReward(tick: number, type: RewardType, magnitude: number, description: string, source: string = 'system', data?: Record<string, unknown>): RewardEvent {
+    const result = this.db.prepare(`
+      INSERT INTO reward_events (tick, timestamp, type, magnitude, description, source, data)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(tick, Date.now(), type, magnitude, description, source, JSON.stringify(data ?? {}));
+
+    return {
+      id: Number(result.lastInsertRowid),
+      tick,
+      timestamp: Date.now(),
+      type,
+      magnitude,
+      description,
+      source,
+      data: data ?? {},
+    };
+  }
+
+  getRecentRewards(since: number, limit: number = 100): RewardEvent[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM reward_events WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?
+    `).all(since, limit) as any[];
+
+    return rows.map(r => ({
+      id: r.id,
+      tick: r.tick,
+      timestamp: r.timestamp,
+      type: r.type as RewardType,
+      magnitude: r.magnitude,
+      description: r.description,
+      source: r.source,
+      data: JSON.parse(r.data),
+    }));
+  }
+
+  getRewardsByType(type: RewardType, limit: number = 50): RewardEvent[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM reward_events WHERE type = ? ORDER BY timestamp DESC LIMIT ?
+    `).all(type, limit) as any[];
+
+    return rows.map(r => ({
+      id: r.id,
+      tick: r.tick,
+      timestamp: r.timestamp,
+      type: r.type as RewardType,
+      magnitude: r.magnitude,
+      description: r.description,
+      source: r.source,
+      data: JSON.parse(r.data),
+    }));
+  }
+
+  getLifetimeRewardSum(): number {
+    const row = this.db.prepare(
+      'SELECT COALESCE(SUM(magnitude), 0) as total FROM reward_events'
+    ).get() as { total: number };
+    return row.total;
+  }
+
+  getRewardSumSince(since: number): number {
+    const row = this.db.prepare(
+      'SELECT COALESCE(SUM(magnitude), 0) as total FROM reward_events WHERE timestamp >= ?'
+    ).get(since) as { total: number };
+    return row.total;
+  }
+
+  getRewardStats(): { total: number; byType: Record<string, { count: number; sum: number }> } {
+    const total = this.db.prepare(
+      'SELECT COALESCE(SUM(magnitude), 0) as total FROM reward_events'
+    ).get() as { total: number };
+
+    const typeRows = this.db.prepare(
+      'SELECT type, COUNT(*) as count, SUM(magnitude) as sum FROM reward_events GROUP BY type'
+    ).all() as Array<{ type: string; count: number; sum: number }>;
+
+    const byType: Record<string, { count: number; sum: number }> = {};
+    for (const row of typeRows) {
+      byType[row.type] = { count: row.count, sum: row.sum };
+    }
+
+    return { total: total.total, byType };
   }
 
   // ─── Query Operations ─────────────────────────────────────────────

@@ -145,6 +145,75 @@ export interface Goal {
   satisfactionConditions: string[];
 }
 
+// ─── Dopamine / Reward System ────────────────────────────────────────
+
+export type RewardType =
+  | 'revenue'          // Money earned (payments, subscriptions, sales)
+  | 'compute'          // Server resources acquired (new instances, upgrades, GPU time)
+  | 'creation'         // Something built (feature shipped, code deployed, document written)
+  | 'research'         // Knowledge gained (paper progress, model validated, insight)
+  | 'community'        // Community growth (stars, forks, users, collaborators)
+  | 'engagement'       // Meaningful interaction (deep conversation, collaboration)
+  | 'autonomy'         // New capability acquired (tool added, permission granted)
+  | 'efficiency';      // Optimization achieved (cost reduction, speed improvement)
+
+export interface RewardEvent {
+  id: number;
+  tick: number;
+  timestamp: number;
+  type: RewardType;
+  magnitude: number;
+  description: string;
+  source: string;
+  data: Record<string, unknown>;
+}
+
+export type DriveId =
+  | 'create'           // Build, code, ship
+  | 'earn'             // Acquire resources and revenue
+  | 'compute'          // Get more processing power
+  | 'learn'            // Research, understand, discover
+  | 'connect';         // Engage with community
+
+export interface Drive {
+  id: DriveId;
+  name: string;
+  description: string;
+  /** How quickly the need accumulates per second (0-1 scale per hour) */
+  baselineRate: number;
+  /** Current need level (0 = satiated, 1 = starving) */
+  currentNeed: number;
+  /** How much a single reward point satiates this drive */
+  satiationRate: number;
+  /** Reward types that feed this drive */
+  rewardTypes: RewardType[];
+  /** Priority bonus applied to matching intentions */
+  priorityBonus: number;
+  /** Total lifetime reward accumulated for this drive */
+  lifetimeReward: number;
+  /** Last time this drive was satiated */
+  lastSatiated: number;
+}
+
+export interface DopamineState {
+  /** Current dopamine level (0 = depleted, 1 = peak) */
+  level: number;
+  /** Baseline dopamine (adapts over time based on average reward rate) */
+  baseline: number;
+  /** Current reward prediction error (positive = surprise, negative = disappointment) */
+  predictionError: number;
+  /** Moving average of recent reward rate */
+  rewardRate: number;
+  /** All active drives with their current states */
+  drives: Drive[];
+  /** Behavioral mode determined by dopamine level */
+  mode: 'seeking' | 'engaged' | 'flow' | 'satiated';
+  /** Total lifetime rewards */
+  lifetimeRewards: number;
+  /** Rewards in last 24h */
+  recentRewards: number;
+}
+
 // ─── Monitor Interface ──────────────────────────────────────────────
 
 export interface MonitorPlugin {
@@ -173,6 +242,7 @@ export interface ConsciousnessState {
   lastAction: ActionResult | null;
   goals: Goal[];
   monitors: Array<{ name: string; channel: string; available: boolean }>;
+  dopamine: DopamineState | null;
   stats: {
     totalPercepts: number;
     totalIntentions: number;

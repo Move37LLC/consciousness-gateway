@@ -16,7 +16,7 @@
  */
 
 import { ConsciousnessLoop } from '../consciousness/loop';
-import { MemoryEntry, ConsciousnessState } from '../consciousness/types';
+import { MemoryEntry, ConsciousnessState, DopamineState } from '../consciousness/types';
 import { Document } from '../documents/types';
 import { SystemDocument } from '../documents/system-store';
 
@@ -177,6 +177,10 @@ export interface PersonalityBuildOptions {
   documents?: Document[];
   /** Immutable system documents — always loaded for personality identity */
   systemDocuments?: SystemDocument[];
+  /** Relevant past conversation excerpts from transcripts */
+  transcriptContext?: string;
+  /** Recent conversation history for current session */
+  sessionHistory?: string;
 }
 
 /**
@@ -216,9 +220,46 @@ export function buildPersonalityContext(
 
   parts.push(
     voice.corePrompt,
+  );
+
+  // Past conversations from transcripts
+  if (options?.transcriptContext) {
+    parts.push(
+      '',
+      '─── RELEVANT PAST CONVERSATIONS ───',
+      'These are excerpts from previous conversations. Use them to maintain continuity and reference past decisions.',
+      '',
+      options.transcriptContext,
+    );
+  }
+
+  // Conversation history for current session
+  if (options?.sessionHistory) {
+    parts.push(
+      '',
+      '─── CONVERSATION HISTORY (Current Session) ───',
+      options.sessionHistory,
+    );
+  }
+
+  // Dopamine / motivational state
+  const dopamineSection = state.dopamine ? formatDopamineState(state.dopamine) : null;
+
+  parts.push(
     '',
     '─── CURRENT CONSCIOUSNESS STATE ───',
     stateSection,
+  );
+
+  if (dopamineSection) {
+    parts.push(
+      '',
+      '─── MOTIVATIONAL STATE (Dopamine) ───',
+      dopamineSection,
+    );
+  }
+
+  parts.push(
     '',
     '─── RECENT EXPERIENCE STREAM ───',
     memorySection,
@@ -303,6 +344,31 @@ function formatMemories(recent: MemoryEntry[], salient: MemoryEntry[]): string {
       const time = new Date(m.timestamp).toLocaleString();
       lines.push(`  [${m.type}] ${m.summary} (${time})`);
     }
+  }
+
+  return lines.join('\n');
+}
+
+function formatDopamineState(dopamine: DopamineState): string {
+  const lines: string[] = [];
+
+  const modeDescriptions: Record<string, string> = {
+    seeking: 'Low dopamine — actively seeking rewards, exploratory, restless',
+    engaged: 'Moderate dopamine — focused, working toward goals',
+    flow: 'High dopamine — in flow state, creative, productive',
+    satiated: 'Peak dopamine — recently rewarded, satisfied',
+  };
+
+  lines.push(`Level: ${(dopamine.level * 100).toFixed(0)}% | Mode: ${dopamine.mode}`);
+  lines.push(modeDescriptions[dopamine.mode] ?? '');
+  lines.push(`Reward rate (24h): ${dopamine.rewardRate.toFixed(2)} | Lifetime: ${dopamine.lifetimeRewards.toFixed(1)}`);
+  lines.push('');
+  lines.push('Active drives (higher need = more motivation to pursue):');
+
+  const sorted = [...dopamine.drives].sort((a, b) => b.currentNeed - a.currentNeed);
+  for (const drive of sorted) {
+    const intensity = drive.currentNeed > 0.7 ? 'HUNGRY' : drive.currentNeed > 0.4 ? 'active' : 'satisfied';
+    lines.push(`  ${drive.name} (${drive.id}): ${(drive.currentNeed * 100).toFixed(0)}% need [${intensity}] — ${drive.description}`);
   }
 
   return lines.join('\n');
