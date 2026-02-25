@@ -61,7 +61,7 @@ const health = gateway.getHealth();
 
 console.log('');
 console.log('  ====================================================');
-console.log('  CONSCIOUSNESS GATEWAY v0.2.0');
+console.log('  CONSCIOUSNESS GATEWAY v0.3.0');
 console.log('  Consciousness-first AI routing with GATO alignment');
 console.log('  ====================================================');
 console.log('');

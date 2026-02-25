@@ -1,6 +1,6 @@
 {
   "name": "consciousness-gateway",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Consciousness-first AI routing with Product Algebra fusion and GATO alignment",
   "main": "dist/index.js",
   "scripts": {
