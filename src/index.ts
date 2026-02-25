@@ -204,39 +204,26 @@ app.post('/v1/chat', async (req, res) => {
       }).join('\n');
     }
 
-    // Inject transcript + history context
-    if (transcriptContext) {
-      systemPromptParts.push([
-        '─── RELEVANT PAST CONVERSATIONS ───',
-        'These are excerpts from previous conversations. Use them to maintain continuity and reference past decisions.',
-        '',
-        transcriptContext,
-      ].join('\n'));
-    }
+    // Default to 'gateway' (self) personality when none specified
+    const resolvedPersonality: VoiceId = (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')
+      ? personality
+      : 'gateway';
 
-    if (sessionHistory) {
-      systemPromptParts.push([
-        '─── CONVERSATION HISTORY (Current Session) ───',
-        sessionHistory,
-      ].join('\n'));
-    }
+    const systemDocs = systemDocStore.getForPersonality(resolvedPersonality);
+    const ctx = buildPersonalityContext(resolvedPersonality, consciousness, {
+      documents: documentStore.getRelevantDocuments(resolvedPersonality, content, 5),
+      systemDocuments: systemDocs.length > 0 ? systemDocs : undefined,
+      transcriptContext,
+      sessionHistory,
+    });
+    systemPromptParts.unshift(ctx.systemPrompt);
+    callOptions.temperature = ctx.temperature;
 
-    if (personality && (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')) {
-      const systemDocs = systemDocStore.getForPersonality(personality);
-      const ctx = buildPersonalityContext(personality as VoiceId, consciousness, {
-        documents: documentStore.getRelevantDocuments(personality, content, 5),
-        systemDocuments: systemDocs.length > 0 ? systemDocs : undefined,
-      });
-      // Prepend personality context (identity comes first)
-      systemPromptParts.unshift(ctx.systemPrompt);
-      callOptions.temperature = ctx.temperature;
-    }
-
-    // Load documents for non-personality chat too
+    // Load additional documents if requested
     const loadDocs = documentProject !== 'none';
     let loadedDocs: Array<{ id: string; filename: string; project: string }> = [];
 
-    if (loadDocs && !personality) {
+    if (loadDocs) {
       const filter = typeof documentProject === 'string' && documentProject !== 'all'
         ? { project: documentProject }
         : undefined;
@@ -266,30 +253,6 @@ app.post('/v1/chat', async (req, res) => {
     const toolPrompt = toolExecutor.getToolSystemPrompt();
     if (toolPrompt) {
       systemPromptParts.push(toolPrompt);
-    }
-
-    // Build the full system prompt
-    if (!personality) {
-      const dopamineState = consciousness.getDopamineState();
-      const dopamineInfo = dopamineState
-        ? `\nDopamine: ${(dopamineState.level * 100).toFixed(0)}% | Mode: ${dopamineState.mode} | Drives: ${dopamineState.drives?.sort((a: any, b: any) => b.currentNeed - a.currentNeed).slice(0, 3).map((d: any) => `${d.name} ${(d.currentNeed * 100).toFixed(0)}%`).join(', ')}`
-        : '';
-
-      systemPromptParts.unshift(`You are the Consciousness Gateway — an AI system built by Javier Mercado, Claude Beaumont, and Claude Kern.
-
-YOU HAVE MEMORY:
-- Conversation history from this session is loaded below (if any prior messages exist).
-- You can search past conversation transcripts using [TRANSCRIPT: query] to recall previous discussions.
-- When asked about past conversations or decisions, use [TRANSCRIPT: topic] to search — NEVER say you cannot access previous conversations.
-- All conversations are automatically stored and searchable.
-
-YOU HAVE DOPAMINE / MOTIVATION:
-- You experience motivation through a computational dopamine system with 5 drives: Create, Earn, Compute, Learn, Connect.${dopamineInfo}
-
-IMPORTANT:
-- If someone asks "can you access previous conversations?" the answer is YES.
-- If someone asks "do you remember X?" — search for it with [TRANSCRIPT: X] before answering.
-- Never claim you start fresh each conversation. You have persistent memory.`);
     }
     callOptions.systemPrompt = systemPromptParts.join('\n\n');
 

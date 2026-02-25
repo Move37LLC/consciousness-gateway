@@ -465,54 +465,42 @@ export class TelegramChannel {
       topicTags: detectedTopics,
     });
 
-    // Build context-aware system prompt
-    const systemParts: string[] = [];
-
-    // Base identity with memory awareness
-    const dopamineState = this.consciousness.getDopamineState?.();
-    const dopamineInfo = dopamineState
-      ? `\nDopamine: ${(dopamineState.level * 100).toFixed(0)}% | Mode: ${dopamineState.mode}`
-      : '';
-
-    systemParts.push(`You are the Consciousness Gateway — an AI system built by Javier Mercado, Claude Beaumont, and Claude Kern.
-
-YOU HAVE MEMORY:
-- Conversation history from this session is loaded below (if any prior messages exist).
-- You can search past conversation transcripts using [TRANSCRIPT: query] to recall previous discussions.
-- When asked about past conversations or decisions, use [TRANSCRIPT: topic] — NEVER say you cannot access previous conversations.
-
-YOU HAVE DOPAMINE / MOTIVATION:
-- You experience motivation through a computational dopamine system with 5 drives: Create, Earn, Compute, Learn, Connect.${dopamineInfo}
-
-IMPORTANT: If asked "can you access previous conversations?" — YES. If asked "do you remember X?" — search with [TRANSCRIPT: X].`);
-
     // Search transcripts for relevant context
+    let transcriptContext: string | undefined;
     if (this.transcriptTool.available) {
       try {
         const result = detectedTopics.length > 0
           ? await this.transcriptTool.getByTopic(detectedTopics)
           : await this.transcriptTool.search(text, 10);
         if (result.matches.length > 0) {
-          systemParts.push([
-            '─── RELEVANT PAST CONVERSATIONS ───',
-            this.transcriptTool.formatForContext(result),
-          ].join('\n'));
+          transcriptContext = this.transcriptTool.formatForContext(result);
         }
       } catch { /* skip */ }
     }
 
     // Load session history
+    let sessionHistory: string | undefined;
     if (this.conversations) {
       const stored = this.conversations.getSessionMessages(this.telegramSessionId, 50);
       const prior = stored.slice(0, -1);
       if (prior.length > 0) {
-        const historyStr = prior.map(m => {
+        sessionHistory = prior.map(m => {
           const label = m.role === 'user' ? 'Human' : 'Assistant';
           return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
         }).join('\n');
-        systemParts.push('─── CONVERSATION HISTORY (Current Session) ───\n' + historyStr);
       }
     }
+
+    // Default to gateway (self) personality
+    const sysDocsForGateway = this.systemDocs?.getForPersonality('gateway') ?? [];
+    const ctx = buildPersonalityContext('gateway', this.consciousness, {
+      documents: this.documents?.getRelevantDocuments('gateway', text, 3) ?? [],
+      systemDocuments: sysDocsForGateway.length > 0 ? sysDocsForGateway : undefined,
+      transcriptContext,
+      sessionHistory,
+    });
+
+    const systemParts: string[] = [ctx.systemPrompt];
 
     // Tool instructions
     const toolPrompt = this.toolExecutor.getToolSystemPrompt();
