@@ -476,7 +476,10 @@ export class MindfulnessLoop {
       totalCorrections: this.totalCorrections,
       lastCheckTick: this.lastCheckTick,
       lastCorrectionTick: this.lastCorrectionTick,
-      recentCorrections,
+      recentCorrections: recentCorrections.map(row => ({
+        ...row,
+        maxSeverity: row.maxSeverity as AttachmentSeverity,
+      })),
       stats: {
         ...stats,
         lastCheckTick: this.lastCheckTick,
