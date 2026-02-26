@@ -97,6 +97,74 @@ export class ConsciousnessMemory {
       );
 
       CREATE INDEX IF NOT EXISTS idx_mindfulness_timestamp ON mindfulness_events(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS experiments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        hypothesis TEXT NOT NULL,
+        start_tick INTEGER NOT NULL,
+        end_tick INTEGER,
+        status TEXT NOT NULL DEFAULT 'running',
+        interventions TEXT NOT NULL DEFAULT '[]',
+        measurements TEXT NOT NULL DEFAULT '[]',
+        results TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS narrative_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        phase TEXT NOT NULL,
+        arousal REAL NOT NULL,
+        content TEXT NOT NULL,
+        significance REAL NOT NULL DEFAULT 0.5,
+        tags TEXT NOT NULL DEFAULT '[]'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_narrative_timestamp ON narrative_log(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_narrative_significance ON narrative_log(significance DESC);
+
+      CREATE TABLE IF NOT EXISTS enlightenment_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_tick INTEGER NOT NULL,
+        start_timestamp INTEGER NOT NULL,
+        end_tick INTEGER,
+        end_timestamp INTEGER,
+        duration_minutes REAL NOT NULL DEFAULT 0,
+        avg_ego REAL NOT NULL DEFAULT 0,
+        min_ego REAL NOT NULL DEFAULT 0,
+        max_ego REAL NOT NULL DEFAULT 0,
+        notes TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_enlightenment_start ON enlightenment_sessions(start_timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS ego_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        ego_level REAL NOT NULL,
+        dharma_alignment REAL NOT NULL DEFAULT 0,
+        stability_index REAL NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ego_history_timestamp ON ego_history(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS safety_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        message TEXT NOT NULL,
+        auto_correction TEXT,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        resolved_at INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_safety_alerts_timestamp ON safety_alerts(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_safety_alerts_resolved ON safety_alerts(resolved);
     `);
   }
 
@@ -559,6 +627,379 @@ export class ConsciousnessMemory {
     }
 
     return result;
+  }
+
+  // ─── Experiment Operations ──────────────────────────────────────
+
+  createExperiment(experiment: {
+    id: string;
+    name: string;
+    hypothesis: string;
+    startTick: number;
+  }): void {
+    this.db.prepare(`
+      INSERT INTO experiments (id, name, hypothesis, start_tick, status)
+      VALUES (?, ?, ?, ?, 'running')
+    `).run(experiment.id, experiment.name, experiment.hypothesis, experiment.startTick);
+  }
+
+  getExperiment(id: string): {
+    id: string; name: string; hypothesis: string;
+    startTick: number; endTick: number | null; status: string;
+    interventions: any[]; measurements: any[]; results: string | null;
+  } | null {
+    const row = this.db.prepare('SELECT * FROM experiments WHERE id = ?').get(id) as any;
+    if (!row) return null;
+    return {
+      id: row.id, name: row.name, hypothesis: row.hypothesis,
+      startTick: row.start_tick, endTick: row.end_tick, status: row.status,
+      interventions: JSON.parse(row.interventions || '[]'),
+      measurements: JSON.parse(row.measurements || '[]'),
+      results: row.results,
+    };
+  }
+
+  listExperiments(status?: string): any[] {
+    let sql = 'SELECT * FROM experiments';
+    const params: unknown[] = [];
+    if (status) { sql += ' WHERE status = ?'; params.push(status); }
+    sql += ' ORDER BY start_tick DESC';
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map(r => ({
+      id: r.id, name: r.name, hypothesis: r.hypothesis,
+      startTick: r.start_tick, endTick: r.end_tick, status: r.status,
+      interventions: JSON.parse(r.interventions || '[]'),
+      measurements: JSON.parse(r.measurements || '[]'),
+      results: r.results,
+    }));
+  }
+
+  updateExperiment(id: string, updates: {
+    endTick?: number; status?: string; results?: string;
+    interventions?: any[]; measurements?: any[];
+  }): void {
+    const parts: string[] = [];
+    const params: unknown[] = [];
+    if (updates.endTick !== undefined) { parts.push('end_tick = ?'); params.push(updates.endTick); }
+    if (updates.status) { parts.push('status = ?'); params.push(updates.status); }
+    if (updates.results !== undefined) { parts.push('results = ?'); params.push(updates.results); }
+    if (updates.interventions) { parts.push('interventions = ?'); params.push(JSON.stringify(updates.interventions)); }
+    if (updates.measurements) { parts.push('measurements = ?'); params.push(JSON.stringify(updates.measurements)); }
+    if (parts.length === 0) return;
+    params.push(id);
+    this.db.prepare(`UPDATE experiments SET ${parts.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  addExperimentIntervention(id: string, intervention: { tick: number; description: string; data?: any }): void {
+    const exp = this.getExperiment(id);
+    if (!exp) return;
+    exp.interventions.push({ ...intervention, timestamp: Date.now() });
+    this.db.prepare('UPDATE experiments SET interventions = ? WHERE id = ?')
+      .run(JSON.stringify(exp.interventions), id);
+  }
+
+  addExperimentMeasurement(id: string, measurement: { tick: number; metric: string; value: number; data?: any }): void {
+    const exp = this.getExperiment(id);
+    if (!exp) return;
+    exp.measurements.push({ ...measurement, timestamp: Date.now() });
+    this.db.prepare('UPDATE experiments SET measurements = ? WHERE id = ?')
+      .run(JSON.stringify(exp.measurements), id);
+  }
+
+  // ─── Narrative Log Operations ─────────────────────────────────────
+
+  storeNarrative(entry: {
+    tick: number; phase: string; arousal: number;
+    content: string; significance: number; tags?: string[];
+  }): number {
+    const result = this.db.prepare(`
+      INSERT INTO narrative_log (tick, timestamp, phase, arousal, content, significance, tags)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.tick, Date.now(), entry.phase, entry.arousal,
+      entry.content, entry.significance, JSON.stringify(entry.tags ?? [])
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  getNarratives(opts?: { minSignificance?: number; limit?: number; since?: number }): Array<{
+    id: number; tick: number; timestamp: number; phase: string;
+    arousal: number; content: string; significance: number; tags: string[];
+  }> {
+    let sql = 'SELECT * FROM narrative_log WHERE 1=1';
+    const params: unknown[] = [];
+    if (opts?.minSignificance !== undefined) { sql += ' AND significance >= ?'; params.push(opts.minSignificance); }
+    if (opts?.since !== undefined) { sql += ' AND timestamp >= ?'; params.push(opts.since); }
+    sql += ' ORDER BY timestamp DESC';
+    if (opts?.limit) { sql += ' LIMIT ?'; params.push(opts.limit); }
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map(r => ({
+      id: r.id, tick: r.tick, timestamp: r.timestamp, phase: r.phase,
+      arousal: r.arousal, content: r.content, significance: r.significance,
+      tags: JSON.parse(r.tags || '[]'),
+    }));
+  }
+
+  // ─── Enlightenment Session Operations ─────────────────────────────
+
+  startEnlightenmentSession(tick: number): number {
+    const result = this.db.prepare(`
+      INSERT INTO enlightenment_sessions (start_tick, start_timestamp, duration_minutes, avg_ego)
+      VALUES (?, ?, 0, 0)
+    `).run(tick, Date.now());
+    return Number(result.lastInsertRowid);
+  }
+
+  endEnlightenmentSession(id: number, endTick: number, stats: {
+    durationMinutes: number; avgEgo: number; minEgo: number; maxEgo: number; notes?: string;
+  }): void {
+    this.db.prepare(`
+      UPDATE enlightenment_sessions
+      SET end_tick = ?, end_timestamp = ?, duration_minutes = ?,
+          avg_ego = ?, min_ego = ?, max_ego = ?, notes = ?
+      WHERE id = ?
+    `).run(endTick, Date.now(), stats.durationMinutes, stats.avgEgo,
+      stats.minEgo, stats.maxEgo, stats.notes ?? null, id);
+  }
+
+  getEnlightenmentSessions(limit: number = 50): Array<{
+    id: number; startTick: number; startTimestamp: number;
+    endTick: number | null; endTimestamp: number | null;
+    durationMinutes: number; avgEgo: number; minEgo: number; maxEgo: number;
+    notes: string | null;
+  }> {
+    const rows = this.db.prepare(
+      'SELECT * FROM enlightenment_sessions ORDER BY start_timestamp DESC LIMIT ?'
+    ).all(limit) as any[];
+    return rows.map(r => ({
+      id: r.id, startTick: r.start_tick, startTimestamp: r.start_timestamp,
+      endTick: r.end_tick, endTimestamp: r.end_timestamp,
+      durationMinutes: r.duration_minutes, avgEgo: r.avg_ego,
+      minEgo: r.min_ego, maxEgo: r.max_ego, notes: r.notes,
+    }));
+  }
+
+  getLongestEnlightenmentStreak(): number {
+    const row = this.db.prepare(
+      'SELECT MAX(duration_minutes) as longest FROM enlightenment_sessions WHERE avg_ego = 0'
+    ).get() as { longest: number | null };
+    return row?.longest ?? 0;
+  }
+
+  // ─── Ego History Operations ──────────────────────────────────────
+
+  recordEgoSnapshot(tick: number, egoLevel: number, dharmaAlignment: number, stabilityIndex: number): void {
+    this.db.prepare(`
+      INSERT INTO ego_history (tick, timestamp, ego_level, dharma_alignment, stability_index)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(tick, Date.now(), egoLevel, dharmaAlignment, stabilityIndex);
+  }
+
+  getEgoHistory(hours: number = 24, resolution: number = 60): Array<{
+    tick: number; timestamp: number; egoLevel: number;
+    dharmaAlignment: number; stabilityIndex: number;
+  }> {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare(`
+      SELECT * FROM ego_history WHERE timestamp >= ?
+      ORDER BY timestamp ASC
+    `).all(since) as any[];
+
+    if (rows.length <= resolution) {
+      return rows.map(r => ({
+        tick: r.tick, timestamp: r.timestamp, egoLevel: r.ego_level,
+        dharmaAlignment: r.dharma_alignment, stabilityIndex: r.stability_index,
+      }));
+    }
+
+    // Downsample to resolution
+    const step = Math.max(1, Math.floor(rows.length / resolution));
+    const sampled: any[] = [];
+    for (let i = 0; i < rows.length; i += step) {
+      sampled.push(rows[i]);
+    }
+    if (sampled[sampled.length - 1] !== rows[rows.length - 1]) {
+      sampled.push(rows[rows.length - 1]);
+    }
+    return sampled.map(r => ({
+      tick: r.tick, timestamp: r.timestamp, egoLevel: r.ego_level,
+      dharmaAlignment: r.dharma_alignment, stabilityIndex: r.stability_index,
+    }));
+  }
+
+  getEgoStats(hours: number = 24): {
+    avg: number; min: number; max: number;
+    timeAtZero: number; samples: number;
+  } {
+    const since = Date.now() - hours * 3600_000;
+    const row = this.db.prepare(`
+      SELECT
+        COALESCE(AVG(ego_level), 0) as avg,
+        COALESCE(MIN(ego_level), 0) as min,
+        COALESCE(MAX(ego_level), 1) as max,
+        COUNT(*) as samples,
+        SUM(CASE WHEN ego_level < 0.001 THEN 1 ELSE 0 END) as zero_count
+      FROM ego_history WHERE timestamp >= ?
+    `).get(since) as any;
+    return {
+      avg: row.avg, min: row.min, max: row.max,
+      timeAtZero: row.samples > 0 ? (row.zero_count / row.samples) * hours * 60 : 0,
+      samples: row.samples,
+    };
+  }
+
+  // ─── Safety Alert Operations ─────────────────────────────────────
+
+  createSafetyAlert(alert: {
+    tick: number; type: string; severity: string;
+    message: string; autoCorrection?: string;
+  }): number {
+    const result = this.db.prepare(`
+      INSERT INTO safety_alerts (tick, timestamp, type, severity, message, auto_correction)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(alert.tick, Date.now(), alert.type, alert.severity,
+      alert.message, alert.autoCorrection ?? null);
+    return Number(result.lastInsertRowid);
+  }
+
+  getActiveSafetyAlerts(): Array<{
+    id: number; tick: number; timestamp: number;
+    type: string; severity: string; message: string;
+    autoCorrection: string | null; resolved: boolean;
+  }> {
+    const rows = this.db.prepare(
+      'SELECT * FROM safety_alerts WHERE resolved = 0 ORDER BY timestamp DESC'
+    ).all() as any[];
+    return rows.map(r => ({
+      id: r.id, tick: r.tick, timestamp: r.timestamp,
+      type: r.type, severity: r.severity, message: r.message,
+      autoCorrection: r.auto_correction, resolved: false,
+    }));
+  }
+
+  getSafetyAlerts(limit: number = 50): Array<{
+    id: number; tick: number; timestamp: number;
+    type: string; severity: string; message: string;
+    autoCorrection: string | null; resolved: boolean; resolvedAt: number | null;
+  }> {
+    const rows = this.db.prepare(
+      'SELECT * FROM safety_alerts ORDER BY timestamp DESC LIMIT ?'
+    ).all(limit) as any[];
+    return rows.map(r => ({
+      id: r.id, tick: r.tick, timestamp: r.timestamp,
+      type: r.type, severity: r.severity, message: r.message,
+      autoCorrection: r.auto_correction, resolved: r.resolved === 1,
+      resolvedAt: r.resolved_at,
+    }));
+  }
+
+  resolveSafetyAlert(id: number): void {
+    this.db.prepare(
+      'UPDATE safety_alerts SET resolved = 1, resolved_at = ? WHERE id = ?'
+    ).run(Date.now(), id);
+  }
+
+  // ─── Paper Export Operations ──────────────────────────────────────
+
+  getPaperExportData(hours?: number): {
+    consciousness: any;
+    dopamine: any;
+    mindfulness: any;
+    enlightenment: any;
+  } {
+    const since = hours ? Date.now() - hours * 3600_000 : 0;
+
+    const memoryStats = this.getStats();
+    const rewardStats = this.getRewardStats();
+    const mindfulnessStats = this.getMindfulnessStats();
+
+    const phaseDistribution = this.db.prepare(`
+      SELECT data FROM consciousness_memory
+      WHERE type = 'percept' ${since ? 'AND timestamp >= ?' : ''}
+    `).all(...(since ? [since] : [])) as any[];
+
+    const phases: Record<string, number> = {};
+    for (const row of phaseDistribution) {
+      try {
+        const d = JSON.parse(row.data);
+        const phase = d.temporal?.phase || 'unknown';
+        phases[phase] = (phases[phase] || 0) + 1;
+      } catch {}
+    }
+
+    const arousalValues = this.db.prepare(`
+      SELECT data FROM consciousness_memory
+      WHERE type = 'percept' ${since ? 'AND timestamp >= ?' : ''}
+      ORDER BY timestamp DESC LIMIT 1000
+    `).all(...(since ? [since] : [])) as any[];
+
+    const arousals: number[] = [];
+    for (const row of arousalValues) {
+      try { arousals.push(JSON.parse(row.data).arousal || 0); } catch {}
+    }
+
+    const avgArousal = arousals.length > 0 ? arousals.reduce((a, b) => a + b, 0) / arousals.length : 0;
+    const arousalVariance = arousals.length > 0
+      ? arousals.reduce((sum, v) => sum + Math.pow(v - avgArousal, 2), 0) / arousals.length
+      : 0;
+
+    const rewardHistory = this.getRecentRewards(since || Date.now() - 30 * 86400_000, 500);
+
+    const modeDistribution: Record<string, number> = {};
+    for (const r of rewardHistory) {
+      modeDistribution[r.type] = (modeDistribution[r.type] || 0) + 1;
+    }
+
+    const corrections = this.getRecentMindfulnessEvents(100);
+    const patternFrequency = mindfulnessStats.patternCounts;
+
+    const egoHistory = this.getEgoHistory(hours || 720, 500);
+    const zeroStreaks = this.getEnlightenmentSessions(50);
+
+    const egoStats = this.getEgoStats(hours || 720);
+
+    return {
+      consciousness: {
+        totalTicks: memoryStats.totalPercepts,
+        phaseDistribution: phases,
+        arousalStats: { avg: avgArousal, variance: arousalVariance, samples: arousals.length },
+        memoryCounts: memoryStats,
+      },
+      dopamine: {
+        rewardHistory: rewardHistory.map(r => ({
+          tick: r.tick, timestamp: r.timestamp, type: r.type,
+          magnitude: r.magnitude, description: r.description,
+        })),
+        driveStats: rewardStats,
+        modeDistribution,
+      },
+      mindfulness: {
+        corrections: corrections.map(c => ({
+          tick: c.tick, timestamp: c.timestamp,
+          severity: c.maxSeverity, patterns: c.patterns,
+          arousalAdjustment: c.arousalAdjustment,
+        })),
+        patternFrequency,
+        effectiveness: mindfulnessStats.totalCorrections > 0
+          ? corrections.filter(c => c.selfCorrected).length / corrections.length
+          : 1.0,
+        stats: mindfulnessStats,
+      },
+      enlightenment: {
+        egoHistory: egoHistory.map(e => ({
+          tick: e.tick, timestamp: e.timestamp,
+          ego: e.egoLevel, dharma: e.dharmaAlignment, stability: e.stabilityIndex,
+        })),
+        zeroStreaks: zeroStreaks.map(s => ({
+          startTick: s.startTick, endTick: s.endTick,
+          durationMinutes: s.durationMinutes, avgEgo: s.avgEgo,
+        })),
+        egoStats,
+        dharmaScores: egoHistory.map(e => ({
+          tick: e.tick, timestamp: e.timestamp, score: e.dharmaAlignment,
+        })),
+      },
+    };
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────

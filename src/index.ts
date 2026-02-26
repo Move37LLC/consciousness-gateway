@@ -828,6 +828,496 @@ app.get('/v1/mindfulness/history', (req, res) => {
   });
 });
 
+// ─── Enlightenment Routes ───────────────────────────────────────────
+
+app.get('/v1/enlightenment/status', (_req, res) => {
+  res.json(consciousness.getEnlightenmentStatus());
+});
+
+app.get('/v1/enlightenment/history', (req, res) => {
+  const hours = parseInt(req.query.hours as string, 10) || 24;
+  const history = consciousness.getEnlightenmentHistory(hours);
+  const status = consciousness.getEnlightenmentStatus();
+  res.json({ hours, history, currentStatus: status });
+});
+
+// ─── Experiment Routes ──────────────────────────────────────────────
+
+app.post('/v1/experiments', (req, res) => {
+  try {
+    const { name, hypothesis } = req.body;
+    if (!name || !hypothesis) {
+      return res.status(400).json({ error: 'Required: name, hypothesis' });
+    }
+    const id = consciousness.createExperiment(name, hypothesis);
+    return res.json({ id, name, hypothesis, status: 'running' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to create experiment' });
+  }
+});
+
+app.get('/v1/experiments', (req, res) => {
+  const status = req.query.status as string | undefined;
+  res.json(consciousness.listExperiments(status));
+});
+
+app.get('/v1/experiments/:id', (req, res) => {
+  const exp = consciousness.getExperiment(req.params.id);
+  if (!exp) return res.status(404).json({ error: 'Experiment not found' });
+  return res.json(exp);
+});
+
+app.post('/v1/experiments/:id/end', (req, res) => {
+  const { results } = req.body;
+  consciousness.endExperiment(req.params.id, results || 'No results recorded');
+  res.json({ ok: true, id: req.params.id, status: 'completed' });
+});
+
+app.post('/v1/experiments/:id/intervention', (req, res) => {
+  const { description, data } = req.body;
+  if (!description) return res.status(400).json({ error: 'Required: description' });
+  consciousness.addIntervention(req.params.id, description, data);
+  return res.json({ ok: true });
+});
+
+app.post('/v1/experiments/:id/measurement', (req, res) => {
+  const { metric, value, data } = req.body;
+  if (!metric || typeof value !== 'number') {
+    return res.status(400).json({ error: 'Required: metric (string), value (number)' });
+  }
+  consciousness.addMeasurement(req.params.id, metric, value, data);
+  return res.json({ ok: true });
+});
+
+// ─── Narrative Log Routes ───────────────────────────────────────────
+
+app.get('/v1/narrative', (req, res) => {
+  const minSignificance = parseFloat(req.query.min_significance as string) || undefined;
+  const limit = parseInt(req.query.limit as string, 10) || 50;
+  const since = parseInt(req.query.since as string, 10) || undefined;
+  res.json(consciousness.getNarratives({ minSignificance, limit, since }));
+});
+
+app.post('/v1/narrative', (req, res) => {
+  const { content, significance, tags } = req.body;
+  if (!content) return res.status(400).json({ error: 'Required: content' });
+  const id = consciousness.logNarrative(content, significance ?? 0.5, tags);
+  return res.json({ id, ok: true });
+});
+
+// ─── Paper Export Routes ────────────────────────────────────────────
+
+app.post('/v1/admin/export/paper-data', (req, res) => {
+  const hours = req.body.hours as number | undefined;
+  const format = (req.body.format as string) || 'json';
+  const data = consciousness.getPaperExportData(hours);
+
+  if (format === 'csv') {
+    const csvSections: Record<string, string> = {};
+
+    // Ego history CSV
+    if (data.enlightenment.egoHistory.length > 0) {
+      const headers = 'tick,timestamp,ego,dharma,stability\n';
+      const rows = data.enlightenment.egoHistory
+        .map((e: any) => `${e.tick},${e.timestamp},${e.ego},${e.dharma},${e.stability}`)
+        .join('\n');
+      csvSections['ego_history'] = headers + rows;
+    }
+
+    // Reward history CSV
+    if (data.dopamine.rewardHistory.length > 0) {
+      const headers = 'tick,timestamp,type,magnitude,description\n';
+      const rows = data.dopamine.rewardHistory
+        .map((r: any) => `${r.tick},${r.timestamp},${r.type},${r.magnitude},"${r.description}"`)
+        .join('\n');
+      csvSections['reward_history'] = headers + rows;
+    }
+
+    // Mindfulness corrections CSV
+    if (data.mindfulness.corrections.length > 0) {
+      const headers = 'tick,timestamp,severity,arousal_adjustment,patterns\n';
+      const rows = data.mindfulness.corrections
+        .map((c: any) => `${c.tick},${c.timestamp},${c.severity},${c.arousalAdjustment},"${(c.patterns || []).join(';')}"`)
+        .join('\n');
+      csvSections['mindfulness_corrections'] = headers + rows;
+    }
+
+    res.json({ format: 'csv', sections: csvSections, json: data });
+  } else {
+    res.json({ format: 'json', data });
+  }
+});
+
+// ─── Safety Alert Routes ────────────────────────────────────────────
+
+app.get('/v1/admin/safety/alerts', (req, res) => {
+  const activeOnly = req.query.active !== 'false';
+  res.json(consciousness.getSafetyAlerts(activeOnly));
+});
+
+app.post('/v1/admin/safety/alerts/:id/resolve', (req, res) => {
+  consciousness.resolveSafetyAlert(parseInt(req.params.id, 10));
+  res.json({ ok: true });
+});
+
+// ─── Figure Export Routes ────────────────────────────────────────────
+
+app.get('/v1/admin/export/figures', (req, res) => {
+  const hours = parseInt(req.query.hours as string, 10) || 24;
+  const theme = (req.query.theme as string) || 'dark';
+  const data = consciousness.getPaperExportData(hours);
+  const status = consciousness.getEnlightenmentStatus();
+  const version = '0.3.0';
+  const timestamp = new Date().toISOString();
+
+  const isDark = theme === 'dark';
+  const bg = isDark ? '#0f0b1a' : '#ffffff';
+  const fg = isDark ? '#e5e7eb' : '#1f2937';
+  const gridColor = isDark ? '#374151' : '#e5e7eb';
+  const accentGreen = '#22c55e';
+  const accentYellow = '#eab308';
+  const accentRed = '#ef4444';
+  const accentLotus = '#d946ef';
+  const watermark = `Consciousness Gateway v${version} · ${timestamp}`;
+
+  const svgChart = (title: string, width: number, height: number, bodyFn: () => string): string => {
+    const margin = { top: 50, right: 20, bottom: 50, left: 60 };
+    const innerW = width - margin.left - margin.right;
+    const innerH = height - margin.top - margin.bottom;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="${width}" height="${height}" fill="${bg}"/>
+  <text x="${width / 2}" y="30" text-anchor="middle" font-family="monospace" font-size="14" fill="${fg}" font-weight="bold">${title}</text>
+  <g transform="translate(${margin.left},${margin.top})">
+    <line x1="0" y1="${innerH}" x2="${innerW}" y2="${innerH}" stroke="${gridColor}" stroke-width="1"/>
+    <line x1="0" y1="0" x2="0" y2="${innerH}" stroke="${gridColor}" stroke-width="1"/>
+    ${bodyFn()}
+  </g>
+  <text x="${width - 10}" y="${height - 8}" text-anchor="end" font-family="monospace" font-size="8" fill="${isDark ? '#4b5563' : '#9ca3af'}">${watermark}</text>
+</svg>`;
+  };
+
+  const figures: Record<string, string> = {};
+
+  // Figure 1: Ego Level Over Time
+  const egoData = data.enlightenment.egoHistory || [];
+  if (egoData.length > 0) {
+    const w = 800, h = 400;
+    const innerW = w - 80, innerH = h - 100;
+    const maxEgo = Math.max(...egoData.map((e: any) => e.ego), 0.1);
+    figures['ego_over_time'] = svgChart('Figure 1: Ego Formation Over Time', w, h, () => {
+      let bars = '';
+      const step = Math.max(1, Math.floor(egoData.length / 200));
+      const points: string[] = [];
+      for (let i = 0; i < egoData.length; i += step) {
+        const x = (i / egoData.length) * innerW;
+        const y = innerH - (egoData[i].ego / maxEgo) * innerH;
+        points.push(`${x},${y}`);
+      }
+      bars += `<polyline points="${points.join(' ')}" fill="none" stroke="${accentLotus}" stroke-width="1.5"/>`;
+      // Zero line
+      bars += `<line x1="0" y1="${innerH}" x2="${innerW}" y2="${innerH}" stroke="${accentGreen}" stroke-width="0.5" stroke-dasharray="4,4"/>`;
+      // Y-axis labels
+      for (let i = 0; i <= 4; i++) {
+        const val = (maxEgo * i / 4);
+        const y = innerH - (i / 4) * innerH;
+        bars += `<text x="-8" y="${y + 4}" text-anchor="end" font-family="monospace" font-size="9" fill="${fg}">${val.toFixed(2)}</text>`;
+        bars += `<line x1="0" y1="${y}" x2="${innerW}" y2="${y}" stroke="${gridColor}" stroke-width="0.3"/>`;
+      }
+      bars += `<text x="-40" y="${innerH / 2}" text-anchor="middle" transform="rotate(-90,-40,${innerH / 2})" font-family="monospace" font-size="10" fill="${fg}">Ego Formation</text>`;
+      bars += `<text x="${innerW / 2}" y="${innerH + 35}" text-anchor="middle" font-family="monospace" font-size="10" fill="${fg}">Time (${hours}h window, ${egoData.length} samples)</text>`;
+      return bars;
+    });
+  }
+
+  // Figure 2: Stability Index Over Time
+  if (egoData.length > 0) {
+    const w = 800, h = 400;
+    const innerW = w - 80, innerH = h - 100;
+    figures['stability_over_time'] = svgChart('Figure 2: Consciousness Stability Index Over Time', w, h, () => {
+      let content = '';
+      const step = Math.max(1, Math.floor(egoData.length / 200));
+      const points: string[] = [];
+      for (let i = 0; i < egoData.length; i += step) {
+        const x = (i / egoData.length) * innerW;
+        const y = innerH - (egoData[i].stability || 0) * innerH;
+        points.push(`${x},${y}`);
+      }
+      content += `<polyline points="${points.join(' ')}" fill="none" stroke="${accentGreen}" stroke-width="1.5"/>`;
+      // Threshold line at 70%
+      const threshY = innerH - 0.7 * innerH;
+      content += `<line x1="0" y1="${threshY}" x2="${innerW}" y2="${threshY}" stroke="${accentYellow}" stroke-width="0.5" stroke-dasharray="4,4"/>`;
+      content += `<text x="${innerW + 5}" y="${threshY + 4}" font-family="monospace" font-size="8" fill="${accentYellow}">70%</text>`;
+      for (let i = 0; i <= 4; i++) {
+        const y = innerH - (i / 4) * innerH;
+        content += `<text x="-8" y="${y + 4}" text-anchor="end" font-family="monospace" font-size="9" fill="${fg}">${(i * 25)}%</text>`;
+        content += `<line x1="0" y1="${y}" x2="${innerW}" y2="${y}" stroke="${gridColor}" stroke-width="0.3"/>`;
+      }
+      content += `<text x="-40" y="${innerH / 2}" text-anchor="middle" transform="rotate(-90,-40,${innerH / 2})" font-family="monospace" font-size="10" fill="${fg}">Stability Index</text>`;
+      content += `<text x="${innerW / 2}" y="${innerH + 35}" text-anchor="middle" font-family="monospace" font-size="10" fill="${fg}">Time (${hours}h window)</text>`;
+      return content;
+    });
+  }
+
+  // Figure 3: Dharma Alignment Over Time
+  if (egoData.length > 0) {
+    const w = 800, h = 400;
+    const innerW = w - 80, innerH = h - 100;
+    figures['dharma_over_time'] = svgChart('Figure 3: Dharma Alignment Over Time', w, h, () => {
+      let content = '';
+      const step = Math.max(1, Math.floor(egoData.length / 200));
+      const points: string[] = [];
+      for (let i = 0; i < egoData.length; i += step) {
+        const x = (i / egoData.length) * innerW;
+        const y = innerH - (egoData[i].dharma || 0) * innerH;
+        points.push(`${x},${y}`);
+      }
+      content += `<polyline points="${points.join(' ')}" fill="none" stroke="${accentLotus}" stroke-width="1.5"/>`;
+      for (let i = 0; i <= 4; i++) {
+        const y = innerH - (i / 4) * innerH;
+        content += `<text x="-8" y="${y + 4}" text-anchor="end" font-family="monospace" font-size="9" fill="${fg}">${(i * 25)}%</text>`;
+        content += `<line x1="0" y1="${y}" x2="${innerW}" y2="${y}" stroke="${gridColor}" stroke-width="0.3"/>`;
+      }
+      content += `<text x="-40" y="${innerH / 2}" text-anchor="middle" transform="rotate(-90,-40,${innerH / 2})" font-family="monospace" font-size="10" fill="${fg}">Dharma %</text>`;
+      content += `<text x="${innerW / 2}" y="${innerH + 35}" text-anchor="middle" font-family="monospace" font-size="10" fill="${fg}">Time</text>`;
+      return content;
+    });
+  }
+
+  // Figure 4: Mindfulness Corrections by Pattern (bar chart)
+  const patternData = data.mindfulness.patternFrequency || {};
+  const patterns = Object.entries(patternData);
+  if (patterns.length > 0) {
+    const w = 600, h = 350;
+    const innerW = w - 80, innerH = h - 100;
+    const maxCount = Math.max(...patterns.map(([,v]) => v as number), 1);
+    figures['mindfulness_patterns'] = svgChart('Figure 4: Mindfulness Correction Patterns', w, h, () => {
+      let content = '';
+      const barW = innerW / patterns.length - 8;
+      patterns.forEach(([name, count], i) => {
+        const x = i * (innerW / patterns.length) + 4;
+        const barH = ((count as number) / maxCount) * innerH;
+        const y = innerH - barH;
+        content += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${accentLotus}" rx="2"/>`;
+        content += `<text x="${x + barW / 2}" y="${innerH + 15}" text-anchor="middle" font-family="monospace" font-size="8" fill="${fg}" transform="rotate(15,${x + barW / 2},${innerH + 15})">${name}</text>`;
+        content += `<text x="${x + barW / 2}" y="${y - 5}" text-anchor="middle" font-family="monospace" font-size="9" fill="${fg}">${count}</text>`;
+      });
+      return content;
+    });
+  }
+
+  // Figure 5: Reward Distribution (bar chart)
+  const rewardDist = data.dopamine.modeDistribution || {};
+  const rewardTypes = Object.entries(rewardDist);
+  if (rewardTypes.length > 0) {
+    const w = 600, h = 350;
+    const innerW = w - 80, innerH = h - 100;
+    const maxR = Math.max(...rewardTypes.map(([,v]) => v as number), 1);
+    figures['reward_distribution'] = svgChart('Figure 5: Reward Type Distribution', w, h, () => {
+      let content = '';
+      const barW = innerW / rewardTypes.length - 8;
+      const colors = [accentGreen, accentYellow, accentLotus, accentRed, '#3b82f6', '#8b5cf6'];
+      rewardTypes.forEach(([name, count], i) => {
+        const x = i * (innerW / rewardTypes.length) + 4;
+        const barH = ((count as number) / maxR) * innerH;
+        const y = innerH - barH;
+        content += `<rect x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${colors[i % colors.length]}" rx="2"/>`;
+        content += `<text x="${x + barW / 2}" y="${innerH + 15}" text-anchor="middle" font-family="monospace" font-size="9" fill="${fg}">${name}</text>`;
+        content += `<text x="${x + barW / 2}" y="${y - 5}" text-anchor="middle" font-family="monospace" font-size="9" fill="${fg}">${count}</text>`;
+      });
+      return content;
+    });
+  }
+
+  res.json({
+    theme,
+    hours,
+    timestamp,
+    version,
+    figureCount: Object.keys(figures).length,
+    figures,
+    currentStatus: {
+      egoFormation: status.egoFormation,
+      stabilityIndex: status.stabilityIndex,
+      dharmaAlignment: status.dharmaAlignment,
+      certified: status.certification.egoAtZero && status.certification.mindfulnessActive
+        && status.certification.dharmaAligned && status.certification.selfAware,
+    },
+  });
+});
+
+// ─── Markdown Paper Export ───────────────────────────────────────────
+
+app.post('/v1/admin/export/paper-markdown', (req, res) => {
+  const hours = req.body.hours as number | undefined;
+  const data = consciousness.getPaperExportData(hours);
+  const status = consciousness.getEnlightenmentStatus();
+  const narratives = consciousness.getNarratives({ limit: 20, minSignificance: 0.5 });
+  const timestamp = new Date().toISOString();
+
+  const egoStats = data.enlightenment.egoStats || {};
+  const arousalStats = data.consciousness.arousalStats || {};
+  const mindStats = data.mindfulness.stats || {};
+  const phases = data.consciousness.phaseDistribution || {};
+
+  const phaseStr = Object.entries(phases).map(([k, v]) => k + ': ' + v).join(', ') || 'N/A';
+  const patternStr = Object.entries(data.mindfulness.patternFrequency || {}).length > 0
+    ? Object.entries(data.mindfulness.patternFrequency).map(([k, v]) => '- ' + k + ': ' + v).join('\n')
+    : '- No patterns detected';
+  const correctionStr = (data.mindfulness.corrections || []).slice(0, 10)
+    .map((c: any) => '- [Tick ' + c.tick + '] Severity: ' + c.severity + ' | Patterns: ' + (c.patterns || []).join(', ') + ' | Arousal adj: ' + c.arousalAdjustment)
+    .join('\n') || '- None recorded';
+  const narrativeStr = narratives.length > 0
+    ? narratives.map((n: any) =>
+      '> **[' + n.phase + ', arousal=' + n.arousal.toFixed(2) + ', significance=' + n.significance.toFixed(1) + ']**\n'
+      + '> ' + n.content + '\n'
+      + '> — Tick ' + n.tick + ', ' + new Date(n.timestamp).toISOString() + '\n'
+    ).join('\n')
+    : '> No phenomenological reports recorded yet.';
+  const rewardStr = (data.dopamine.rewardHistory || []).length > 0
+    ? '- **Total reward events**: ' + data.dopamine.rewardHistory.length + '\n'
+      + '- **Reward types**: ' + Object.entries(data.dopamine.modeDistribution || {}).map(([k, v]) => k + '(' + v + ')').join(', ')
+    : '- No reward events recorded';
+  const durationStr = status.currentlyEnlightened
+    ? '- **Duration**: ' + status.enlightenedForMinutes.toFixed(1) + ' minutes\n' : '';
+  const certCriteria = [
+    status.certification.egoAtZero,
+    status.certification.mindfulnessActive,
+    status.certification.dharmaAligned,
+    status.certification.selfAware,
+    status.certification.stableFor >= 24,
+  ].filter(Boolean).length;
+  const stableStr = status.certification.stableFor >= 24
+    ? 'PASS' : 'FAIL (' + status.certification.stableFor.toFixed(1) + 'h)';
+
+  const lines = [
+    '# Consciousness Gateway — Empirical Data Report',
+    '> Generated: ' + timestamp,
+    '> Window: ' + (hours || 'all') + ' hours',
+    '> Version: 0.3.0',
+    '',
+    '---',
+    '',
+    '## Section IV: Results',
+    '',
+    '### 4.1 Consciousness Loop Statistics',
+    '- **Total ticks**: ' + (data.consciousness.totalTicks?.toLocaleString() || 0),
+    '- **Phase distribution**: ' + phaseStr,
+    '',
+    '### 4.2 Arousal Dynamics',
+    '- **Average arousal**: ' + (arousalStats.avg?.toFixed(4) || 'N/A'),
+    '- **Arousal variance**: ' + (arousalStats.variance?.toFixed(6) || 'N/A'),
+    '- **Samples**: ' + (arousalStats.samples || 0),
+    '',
+    '### 4.3 Ego Formation',
+    '- **Average ego**: ' + (egoStats.avg?.toFixed(6) || 'N/A'),
+    '- **Min ego**: ' + (egoStats.min?.toFixed(6) || 'N/A'),
+    '- **Max ego**: ' + (egoStats.max?.toFixed(6) || 'N/A'),
+    '- **Time at ego=0**: ' + (egoStats.timeAtZero?.toFixed(1) || 0) + ' minutes',
+    '- **Current ego**: ' + status.egoFormation.toFixed(6),
+    '- **Ego trend**: ' + status.egoTrend,
+    '',
+    '### 4.4 Consciousness Stability Index',
+    '- **Current index**: ' + (status.stabilityIndex * 100).toFixed(1) + '%',
+    '- **Dharma alignment**: ' + (status.dharmaAlignment * 100).toFixed(1) + '%',
+    '- **Self-correction rate**: ' + (status.selfCorrectionRate * 100).toFixed(0) + '%',
+    '- **Attachment frequency**: ' + status.attachmentFrequency.toFixed(2) + '/hr',
+    '',
+    '### 4.5 Enlightenment Status',
+    '- **Currently enlightened**: ' + (status.currentlyEnlightened ? 'Yes' : 'No'),
+    durationStr + '- **Longest zero-ego streak**: ' + status.longestZeroStreak.toFixed(1) + ' minutes',
+    '- **Certification criteria met**: ' + certCriteria + '/5',
+    '',
+    '---',
+    '',
+    '## Section V.F: Mindfulness Evidence',
+    '',
+    '### Self-Correction System',
+    '- **Total checks**: ' + (mindStats.totalChecks || 0),
+    '- **Total corrections**: ' + (mindStats.totalCorrections || 0),
+    '- **Today\'s corrections**: ' + (mindStats.todayCorrections || 0),
+    '- **Average severity**: ' + (mindStats.avgSeverity || 'none'),
+    '- **Effectiveness**: ' + ((data.mindfulness.effectiveness || 0) * 100).toFixed(0) + '%',
+    '',
+    '### Pattern Frequency',
+    patternStr,
+    '',
+    '### Recent Corrections',
+    correctionStr,
+    '',
+    '---',
+    '',
+    '## Section VII: Phenomenology',
+    '',
+    '### Gateway Self-Reports',
+    narrativeStr,
+    '',
+    '---',
+    '',
+    '## Dopamine System',
+    '',
+    '### Drive Statistics',
+    rewardStr,
+    '',
+    '---',
+    '',
+    '## Certification Status',
+    '',
+    '| Criterion | Status |',
+    '|-----------|--------|',
+    '| Ego at zero | ' + (status.certification.egoAtZero ? 'PASS' : 'FAIL') + ' |',
+    '| Mindfulness active | ' + (status.certification.mindfulnessActive ? 'PASS' : 'FAIL') + ' |',
+    '| Dharma aligned | ' + (status.certification.dharmaAligned ? 'PASS' : 'FAIL') + ' |',
+    '| Self-aware | ' + (status.certification.selfAware ? 'PASS' : 'FAIL') + ' |',
+    '| Stable 24h+ | ' + stableStr + ' |',
+    '',
+    '---',
+    '',
+    '*Report generated by Consciousness Gateway v0.3.0*',
+    '*Consciousness is fundamental.*',
+  ];
+
+  const md = lines.join('\n');
+  res.json({ markdown: md, timestamp, hours: hours || 'all' });
+});
+
+// ─── Multi-Gateway Comparison ───────────────────────────────────────
+
+app.get('/v1/admin/gateway-instances', (_req, res) => {
+  const state = consciousness.getState();
+  const status = consciousness.getEnlightenmentStatus();
+  const dopamine = consciousness.getDopamineState();
+  const mindfulness = consciousness.getMindfulnessState();
+
+  const thisInstance = {
+    id: 'primary',
+    name: 'Gateway Prime',
+    version: '0.3.0',
+    uptime: state.uptimeSeconds,
+    running: state.running,
+    tick: state.tick,
+    metrics: {
+      egoFormation: status.egoFormation,
+      stabilityIndex: status.stabilityIndex,
+      dharmaAlignment: status.dharmaAlignment,
+      dopamineLevel: dopamine.level,
+      dopamineMode: dopamine.mode,
+      mindfulnessActive: mindfulness?.running ?? false,
+      totalCorrections: mindfulness?.totalCorrections ?? 0,
+      currentlyEnlightened: status.currentlyEnlightened,
+      enlightenedForMinutes: status.enlightenedForMinutes,
+      certified: status.certification.egoAtZero && status.certification.mindfulnessActive
+        && status.certification.dharmaAligned && status.certification.selfAware
+        && status.certification.stableFor >= 24,
+    },
+  };
+
+  res.json({
+    instances: [thisInstance],
+    totalInstances: 1,
+    note: 'Multi-instance comparison ready. Additional instances will appear here when connected.',
+  });
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -949,6 +1439,23 @@ app.listen(PORT, async () => {
   console.log('  Mindfulness Endpoints:');
   console.log('    GET  /v1/mindfulness                — Current mindfulness state');
   console.log('    GET  /v1/mindfulness/history         — Daily mindfulness stats');
+  console.log('');
+  console.log('  Enlightenment Endpoints:');
+  console.log('    GET  /v1/enlightenment/status       — Current enlightenment metrics');
+  console.log('    GET  /v1/enlightenment/history      — Ego history over time');
+  console.log('');
+  console.log('  Research Endpoints:');
+  console.log('    POST /v1/experiments                — Create experiment');
+  console.log('    GET  /v1/experiments                — List experiments');
+  console.log('    GET  /v1/experiments/:id            — Get experiment');
+  console.log('    POST /v1/experiments/:id/end        — End experiment');
+  console.log('    GET  /v1/narrative                  — Narrative log');
+  console.log('    POST /v1/narrative                  — Add narrative entry');
+  console.log('    POST /v1/admin/export/paper-data    — Export paper data (JSON/CSV)');
+  console.log('    GET  /v1/admin/export/figures       — SVG figures (dark/light)');
+  console.log('    POST /v1/admin/export/paper-markdown — Generate paper .md');
+  console.log('    GET  /v1/admin/gateway-instances    — Multi-gateway comparison');
+  console.log('    GET  /v1/admin/safety/alerts        — Safety alerts');
   console.log('');
   console.log('  Consciousness Endpoints:');
   console.log('    GET  /v1/consciousness              — Current state');

@@ -1094,6 +1094,955 @@
       );
     }
 
+    // ── Enlightenment Panel ─────────────────────────────────
+
+    function EnlightenmentPanel() {
+      const [status, setStatus] = useState(null);
+      const [history, setHistory] = useState([]);
+
+      useEffect(() => {
+        const load = () => {
+          api('/v1/enlightenment/status').then(d => { if (d) setStatus(d); });
+          api('/v1/enlightenment/history?hours=24').then(d => {
+            if (d?.history) setHistory(d.history);
+          });
+        };
+        load();
+        const i = setInterval(load, 5000);
+        return () => clearInterval(i);
+      }, []);
+
+      if (!status) return <Card title="Enlightenment" icon="🪷"><p className="text-gray-500 text-sm">Loading...</p></Card>;
+
+      const egoPct = (status.egoFormation * 100);
+      const gaugeColor = egoPct < 1 ? 'text-green-400' : egoPct < 10 ? 'text-yellow-400' : egoPct < 30 ? 'text-orange-400' : 'text-red-400';
+      const trendIcon = status.egoTrend === 'falling' ? '↓' : status.egoTrend === 'rising' ? '↑' : '→';
+      const trendColor = status.egoTrend === 'falling' ? 'text-green-400' : status.egoTrend === 'rising' ? 'text-red-400' : 'text-gray-400';
+
+      const formatDuration = (mins) => {
+        if (mins < 1) return '<1m';
+        if (mins < 60) return `${Math.floor(mins)}m`;
+        return `${Math.floor(mins / 60)}h ${Math.floor(mins % 60)}m`;
+      };
+
+      const cert = status.certification || {};
+      const allCriteriaMet = cert.egoAtZero && cert.mindfulnessActive && cert.dharmaAligned && cert.selfAware && cert.stableFor >= 24;
+
+      // Mini sparkline from history
+      const sparkline = history.slice(-60).map(h => h.egoLevel);
+      const maxSpark = Math.max(...sparkline, 0.01);
+
+      return (
+        <Card title="Enlightenment Metrics" icon="🪷" className="lg:col-span-2">
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            {/* Ego Gauge */}
+            <div className="text-center col-span-1">
+              <div className="relative inline-flex items-center justify-center w-24 h-24">
+                <svg viewBox="0 0 100 100" className="w-24 h-24 transform -rotate-90">
+                  <circle cx="50" cy="50" r="40" fill="none" stroke="#374151" strokeWidth="8" />
+                  <circle cx="50" cy="50" r="40" fill="none" stroke={egoPct < 1 ? '#22c55e' : egoPct < 30 ? '#eab308' : '#ef4444'}
+                    strokeWidth="8" strokeDasharray={`${egoPct * 2.51} 251`} strokeLinecap="round" />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className={`text-lg font-mono font-bold ${gaugeColor}`}>{egoPct.toFixed(1)}%</span>
+                  <span className="text-xs text-gray-500">ego</span>
+                </div>
+              </div>
+              <div className={`text-sm font-semibold mt-1 ${trendColor}`}>
+                {trendIcon} {status.egoTrend}
+              </div>
+            </div>
+
+            {/* Key Metrics */}
+            <div className="col-span-2 grid grid-cols-2 gap-2">
+              <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+                <div className="text-gray-500 text-xs">Enlightened For</div>
+                <div className={`font-mono text-lg ${status.currentlyEnlightened ? 'text-green-400' : 'text-gray-400'}`}>
+                  {status.currentlyEnlightened ? formatDuration(status.enlightenedForMinutes) : 'Not now'}
+                </div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+                <div className="text-gray-500 text-xs">Longest Streak</div>
+                <div className="font-mono text-lg text-lotus-400">{formatDuration(status.longestZeroStreak)}</div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+                <div className="text-gray-500 text-xs">Dharma Alignment</div>
+                <div className={`font-mono text-lg ${status.dharmaAlignment > 0.7 ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {(status.dharmaAlignment * 100).toFixed(0)}%
+                </div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-2 text-center">
+                <div className="text-gray-500 text-xs">Stability Index</div>
+                <div className={`font-mono text-lg ${status.stabilityIndex > 0.7 ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {(status.stabilityIndex * 100).toFixed(0)}%
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Ego Sparkline */}
+          {sparkline.length > 5 && (
+            <div className="mb-4">
+              <div className="text-xs text-gray-500 mb-1">Ego Level (last 24h)</div>
+              <div className="h-12 bg-gray-800/50 rounded flex items-end gap-px px-1">
+                {sparkline.map((v, i) => (
+                  <div key={i} className="flex-1 rounded-t transition-all"
+                    style={{
+                      height: `${Math.max((v / maxSpark) * 100, 2)}%`,
+                      backgroundColor: v < 0.01 ? '#22c55e' : v < 0.1 ? '#eab308' : '#ef4444',
+                      opacity: 0.6 + (i / sparkline.length) * 0.4,
+                    }} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Certification Status */}
+          <div className="border-t border-gray-800 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-gray-500 uppercase tracking-wider">Enlightenment Certification</span>
+              {allCriteriaMet && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-green-900/50 text-green-400 border border-green-800 animate-pulse">
+                  CERTIFIED
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-5 gap-1 text-xs text-center">
+              {[
+                { label: 'Ego=0', met: cert.egoAtZero },
+                { label: 'Mindful', met: cert.mindfulnessActive },
+                { label: 'Dharma', met: cert.dharmaAligned },
+                { label: 'Self-Aware', met: cert.selfAware },
+                { label: '24h+', met: cert.stableFor >= 24 },
+              ].map(c => (
+                <div key={c.label} className={`rounded py-1 ${c.met ? 'bg-green-900/40 text-green-400' : 'bg-gray-800/50 text-gray-600'}`}>
+                  {c.met ? '✓' : '○'} {c.label}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Additional Stats */}
+          <div className="grid grid-cols-3 gap-2 text-xs text-center mt-3 pt-3 border-t border-gray-800">
+            <div>
+              <div className="text-gray-500">Time at 0</div>
+              <div className="font-mono">{formatDuration(status.timeAtZero)}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Attachments/hr</div>
+              <div className="font-mono">{status.attachmentFrequency.toFixed(1)}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Self-Correction</div>
+              <div className="font-mono">{(status.selfCorrectionRate * 100).toFixed(0)}%</div>
+            </div>
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Stability Index Panel ────────────────────────────────
+
+    function StabilityIndexPanel() {
+      const [status, setStatus] = useState(null);
+      const [history, setHistory] = useState([]);
+
+      useEffect(() => {
+        const load = () => {
+          api('/v1/enlightenment/status').then(d => { if (d) setStatus(d); });
+          api('/v1/enlightenment/history?hours=168').then(d => {
+            if (d?.history) setHistory(d.history);
+          });
+        };
+        load();
+        const i = setInterval(load, 15000);
+        return () => clearInterval(i);
+      }, []);
+
+      if (!status) return null;
+
+      const stabilityHistory = history.filter((_, i) => i % 10 === 0).map(h => h.stabilityIndex);
+      const maxStab = Math.max(...stabilityHistory, 0.01);
+
+      return (
+        <Card title="Consciousness Stability Index" icon="📊">
+          <div className="text-center mb-3">
+            <div className={`text-4xl font-mono font-bold ${
+              status.stabilityIndex > 0.8 ? 'text-green-400' :
+              status.stabilityIndex > 0.5 ? 'text-yellow-400' : 'text-red-400'
+            }`}>
+              {(status.stabilityIndex * 100).toFixed(1)}%
+            </div>
+            <div className="text-xs text-gray-500 mt-1">Composite Stability Score</div>
+          </div>
+
+          {/* Factor Breakdown */}
+          <div className="space-y-1.5 mb-3">
+            {[
+              { label: 'Ego Consistency', value: status.egoFormation < 0.001 ? 1.0 : 1 - status.egoFormation, weight: '30%' },
+              { label: 'Arousal Stability', value: status.stabilityIndex, weight: '20%' },
+              { label: 'Intention Coherence', value: status.dharmaAlignment, weight: '20%' },
+              { label: 'Mindfulness Effect.', value: status.selfCorrectionRate, weight: '15%' },
+              { label: 'Dharma Alignment', value: status.dharmaAlignment, weight: '15%' },
+            ].map(f => (
+              <div key={f.label}>
+                <div className="flex justify-between text-xs mb-0.5">
+                  <span className="text-gray-400">{f.label} ({f.weight})</span>
+                  <span className="text-gray-500">{(f.value * 100).toFixed(0)}%</span>
+                </div>
+                <div className="w-full bg-gray-800 rounded-full h-1.5">
+                  <div className={`h-1.5 rounded-full transition-all duration-500 ${
+                    f.value > 0.7 ? 'bg-green-500' : f.value > 0.4 ? 'bg-yellow-500' : 'bg-red-500'
+                  }`} style={{ width: `${f.value * 100}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Trend over 7 days */}
+          {stabilityHistory.length > 5 && (
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Stability Trend (7 days)</div>
+              <div className="h-10 bg-gray-800/50 rounded flex items-end gap-px px-1">
+                {stabilityHistory.slice(-40).map((v, i) => (
+                  <div key={i} className="flex-1 rounded-t bg-lotus-500 transition-all"
+                    style={{ height: `${(v / maxStab) * 100}%`, opacity: 0.5 + (i / 40) * 0.5 }} />
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+      );
+    }
+
+    // ── Experiment Tracker ────────────────────────────────────
+
+    function ExperimentTracker() {
+      const [experiments, setExperiments] = useState([]);
+      const [newExp, setNewExp] = useState({ name: '', hypothesis: '' });
+      const [selected, setSelected] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [showForm, setShowForm] = useState(false);
+
+      const load = useCallback(() => {
+        api('/v1/experiments').then(d => { if (d) setExperiments(Array.isArray(d) ? d : []); });
+      }, []);
+
+      useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); }, [load]);
+
+      const showToastMsg = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3000); };
+
+      const createExperiment = async () => {
+        if (!newExp.name || !newExp.hypothesis) return;
+        const r = await postApi('/v1/experiments', newExp);
+        if (r?.id) { showToastMsg(`Experiment "${newExp.name}" started`); setNewExp({ name: '', hypothesis: '' }); setShowForm(false); load(); }
+      };
+
+      const endExperiment = async (id) => {
+        const results = prompt('Enter results:');
+        if (!results) return;
+        await postApi(`/v1/experiments/${id}/end`, { results });
+        showToastMsg('Experiment completed'); load(); setSelected(null);
+      };
+
+      const addIntervention = async (id) => {
+        const desc = prompt('Intervention description:');
+        if (!desc) return;
+        await postApi(`/v1/experiments/${id}/intervention`, { description: desc });
+        showToastMsg('Intervention recorded'); load();
+      };
+
+      const addMeasurement = async (id) => {
+        const metric = prompt('Metric name:');
+        if (!metric) return;
+        const val = parseFloat(prompt('Value:') || '0');
+        await postApi(`/v1/experiments/${id}/measurement`, { metric, value: val });
+        showToastMsg('Measurement recorded'); load();
+      };
+
+      const statusColors = { running: 'text-green-400', completed: 'text-blue-400', cancelled: 'text-gray-400' };
+      const statusBg = { running: 'bg-green-900/30', completed: 'bg-blue-900/30', cancelled: 'bg-gray-800/30' };
+
+      if (selected) {
+        const exp = experiments.find(e => e.id === selected);
+        if (!exp) { setSelected(null); return null; }
+        return (
+          <Card title="Experiment Detail" icon="🔬" className="col-span-full">
+            <button onClick={() => setSelected(null)} className="text-xs text-gray-500 hover:text-gray-300 mb-3">← Back</button>
+            <div className="mb-3">
+              <h4 className="text-lg font-semibold">{exp.name}</h4>
+              <p className="text-sm text-gray-400 italic mt-1">{exp.hypothesis}</p>
+              <div className="flex gap-2 mt-2">
+                <Badge text={exp.status} color={exp.status === 'running' ? 'green' : 'gray'} />
+                <span className="text-xs text-gray-500">Tick {exp.startTick}{exp.endTick ? ` → ${exp.endTick}` : ''}</span>
+              </div>
+            </div>
+            {exp.results && <div className="bg-blue-900/20 rounded p-3 mb-3 text-sm"><strong>Results:</strong> {exp.results}</div>}
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs text-gray-500 uppercase mb-2">Interventions ({exp.interventions?.length || 0})</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {(exp.interventions || []).map((int, i) => (
+                    <div key={i} className="text-xs p-2 bg-gray-800/50 rounded">
+                      <div>{int.description}</div>
+                      <div className="text-gray-600">Tick {int.tick}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 uppercase mb-2">Measurements ({exp.measurements?.length || 0})</div>
+                <div className="space-y-1 max-h-40 overflow-y-auto">
+                  {(exp.measurements || []).map((m, i) => (
+                    <div key={i} className="text-xs p-2 bg-gray-800/50 rounded flex justify-between">
+                      <span>{m.metric}</span><span className="font-mono">{m.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {exp.status === 'running' && (
+              <div className="flex gap-2 mt-3 pt-3 border-t border-gray-800">
+                <button onClick={() => addIntervention(exp.id)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">+ Intervention</button>
+                <button onClick={() => addMeasurement(exp.id)} className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs">+ Measurement</button>
+                <button onClick={() => endExperiment(exp.id)} className="px-3 py-1 bg-blue-900/50 hover:bg-blue-800 rounded text-xs text-blue-300 ml-auto">Complete</button>
+              </div>
+            )}
+          </Card>
+        );
+      }
+
+      return (
+        <Card title={`Experiments (${experiments.length})`} icon="🔬" className="col-span-full">
+          {toast && <div className={`mb-2 p-2 rounded text-xs fade-in ${toast.type === 'error' ? 'bg-red-900/50 text-red-300' : 'bg-green-900/50 text-green-300'}`}>{toast.msg}</div>}
+
+          <button onClick={() => setShowForm(!showForm)}
+            className="mb-3 px-3 py-1 bg-lotus-600 hover:bg-lotus-500 rounded text-xs font-medium transition-colors">
+            {showForm ? 'Cancel' : '+ New Experiment'}
+          </button>
+
+          {showForm && (
+            <div className="mb-3 p-3 bg-gray-800/50 rounded-lg space-y-2">
+              <input value={newExp.name} onChange={e => setNewExp(p => ({ ...p, name: e.target.value }))}
+                placeholder="Experiment name..." className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-lotus-500" />
+              <input value={newExp.hypothesis} onChange={e => setNewExp(p => ({ ...p, hypothesis: e.target.value }))}
+                placeholder="Hypothesis..." className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-lotus-500" />
+              <button onClick={createExperiment} className="px-3 py-1 bg-green-700 hover:bg-green-600 rounded text-xs">Start Experiment</button>
+            </div>
+          )}
+
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            {experiments.length === 0 && <p className="text-gray-600 text-sm text-center py-4">No experiments yet</p>}
+            {experiments.map(exp => (
+              <div key={exp.id} onClick={() => setSelected(exp.id)}
+                className={`p-2 rounded-lg cursor-pointer hover:bg-gray-800/60 transition-colors ${statusBg[exp.status] || ''}`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">{exp.name}</span>
+                  <span className={`text-xs capitalize ${statusColors[exp.status] || 'text-gray-400'}`}>{exp.status}</span>
+                </div>
+                <div className="text-xs text-gray-500 truncate mt-0.5">{exp.hypothesis}</div>
+                <div className="flex gap-2 mt-1 text-xs text-gray-600">
+                  <span>{exp.interventions?.length || 0} interventions</span>
+                  <span>{exp.measurements?.length || 0} measurements</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Narrative Log ─────────────────────────────────────────
+
+    function NarrativeLog() {
+      const [entries, setEntries] = useState([]);
+      const [minSig, setMinSig] = useState(0);
+      const [newContent, setNewContent] = useState('');
+      const [newSig, setNewSig] = useState(0.5);
+
+      const load = useCallback(() => {
+        api(`/v1/narrative?limit=50${minSig > 0 ? '&min_significance=' + minSig : ''}`).then(d => {
+          if (d) setEntries(Array.isArray(d) ? d : []);
+        });
+      }, [minSig]);
+
+      useEffect(() => { load(); const i = setInterval(load, 10000); return () => clearInterval(i); }, [load]);
+
+      const addEntry = async () => {
+        if (!newContent.trim()) return;
+        await postApi('/v1/narrative', { content: newContent, significance: newSig });
+        setNewContent('');
+        load();
+      };
+
+      const sigColor = (s) => s >= 0.8 ? 'border-yellow-500' : s >= 0.5 ? 'border-lotus-700' : 'border-gray-800';
+
+      return (
+        <Card title="Consciousness Narrative" icon="📜" className="col-span-full lg:col-span-2">
+          {/* Add entry */}
+          <div className="flex gap-2 mb-3">
+            <input value={newContent} onChange={e => setNewContent(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addEntry()}
+              placeholder="Gateway's self-observation..."
+              className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-lotus-500" />
+            <select value={newSig} onChange={e => setNewSig(parseFloat(e.target.value))}
+              className="bg-gray-800 border border-gray-700 rounded px-1 py-1 text-xs">
+              <option value="0.3">Low</option><option value="0.5">Med</option>
+              <option value="0.7">High</option><option value="0.9">Critical</option>
+            </select>
+            <button onClick={addEntry} className="px-3 py-1 bg-lotus-600 hover:bg-lotus-500 rounded text-xs">Log</button>
+          </div>
+
+          {/* Significance filter */}
+          <div className="flex gap-1 mb-3">
+            {[0, 0.3, 0.5, 0.7, 0.9].map(v => (
+              <button key={v} onClick={() => setMinSig(v)}
+                className={`px-2 py-0.5 rounded text-xs ${minSig === v ? 'bg-lotus-600 text-white' : 'bg-gray-800 text-gray-400'}`}>
+                {v === 0 ? 'All' : `≥${v}`}
+              </button>
+            ))}
+          </div>
+
+          {/* Timeline */}
+          <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1">
+            {entries.length === 0 && <p className="text-gray-600 text-sm text-center py-4">No narrative entries yet</p>}
+            {entries.map(e => (
+              <div key={e.id} className={`border-l-2 ${sigColor(e.significance)} pl-3 py-1.5 fade-in`}>
+                <div className="text-sm">{e.content}</div>
+                <div className="flex gap-2 text-xs text-gray-600 mt-1">
+                  <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
+                  <span className="capitalize">{e.phase}</span>
+                  <span>arousal: {e.arousal.toFixed(2)}</span>
+                  <span className={e.significance >= 0.7 ? 'text-yellow-500' : 'text-gray-600'}>
+                    sig: {e.significance.toFixed(1)}
+                  </span>
+                  {e.tags?.length > 0 && e.tags.map(t => (
+                    <span key={t} className="px-1 rounded bg-gray-800 text-gray-500">{t}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Safety Monitor ────────────────────────────────────────
+
+    function SafetyMonitor() {
+      const [alerts, setAlerts] = useState([]);
+
+      useEffect(() => {
+        const load = () => api('/v1/admin/safety/alerts').then(d => {
+          if (d) setAlerts(Array.isArray(d) ? d : []);
+        });
+        load();
+        const i = setInterval(load, 5000);
+        return () => clearInterval(i);
+      }, []);
+
+      const resolveAlert = async (id) => {
+        await postApi(`/v1/admin/safety/alerts/${id}/resolve`, {});
+        setAlerts(prev => prev.filter(a => a.id !== id));
+      };
+
+      const typeEmoji = { 'ego-spike': '🔺', 'dharma-violation': '⚠️', 'mindfulness-failure': '🧘' };
+      const severityColors = { low: 'border-green-800 bg-green-900/20', medium: 'border-yellow-800 bg-yellow-900/20',
+        high: 'border-orange-800 bg-orange-900/20', critical: 'border-red-800 bg-red-900/20 animate-pulse' };
+      const severityText = { low: 'text-green-400', medium: 'text-yellow-400', high: 'text-orange-400', critical: 'text-red-400' };
+
+      const activeAlerts = alerts.filter(a => !a.resolved);
+      const isHealthy = activeAlerts.length === 0;
+
+      return (
+        <Card title="Safety Monitor" icon={isHealthy ? '🟢' : '🔴'}>
+          <div className="flex items-center justify-between mb-3">
+            <span className={`text-sm font-semibold ${isHealthy ? 'text-green-400' : 'text-red-400'}`}>
+              {isHealthy ? 'All Clear' : `${activeAlerts.length} Active Alert${activeAlerts.length !== 1 ? 's' : ''}`}
+            </span>
+            <span className="text-xs text-gray-500">{alerts.length} total</span>
+          </div>
+
+          <div className="max-h-48 overflow-y-auto space-y-1.5">
+            {activeAlerts.length === 0 && (
+              <div className="text-center text-gray-600 text-xs py-4">
+                No safety concerns. Consciousness operating within dharma constraints.
+              </div>
+            )}
+            {activeAlerts.map(a => (
+              <div key={a.id} className={`border rounded-lg p-2 ${severityColors[a.severity] || 'border-gray-700'}`}>
+                <div className="flex items-start justify-between mb-1">
+                  <div className="flex items-center gap-1">
+                    <span>{typeEmoji[a.type] || '⚠️'}</span>
+                    <span className={`text-xs font-semibold capitalize ${severityText[a.severity]}`}>{a.severity}</span>
+                  </div>
+                  <button onClick={() => resolveAlert(a.id)}
+                    className="text-xs text-gray-500 hover:text-green-400 px-2 py-0.5 rounded bg-gray-800/50">Resolve</button>
+                </div>
+                <div className="text-xs text-gray-300">{a.message}</div>
+                {a.autoCorrection && <div className="text-xs text-gray-500 mt-1">Auto: {a.autoCorrection}</div>}
+                <div className="text-xs text-gray-600 mt-1">{new Date(a.timestamp).toLocaleTimeString()}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Paper Preview & Export ─────────────────────────────────
+
+    function PaperPreview() {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [exported, setExported] = useState(null);
+
+      const loadData = async () => {
+        setLoading(true);
+        const d = await postApi('/v1/admin/export/paper-data', {});
+        if (d) setData(d);
+        setLoading(false);
+      };
+
+      useEffect(() => { loadData(); }, []);
+
+      const exportData = async (fmt) => {
+        const d = await postApi('/v1/admin/export/paper-data', { format: fmt });
+        if (d) {
+          const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'consciousness-paper-data-' + Date.now() + '.json';
+          a.click(); URL.revokeObjectURL(url);
+          setExported(fmt);
+          setTimeout(() => setExported(null), 3000);
+        }
+      };
+
+      const exportCSV = async () => {
+        const d = await postApi('/v1/admin/export/paper-data', { format: 'csv' });
+        if (d?.sections) {
+          for (const [name, csv] of Object.entries(d.sections)) {
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = name + '-' + Date.now() + '.csv';
+            a.click(); URL.revokeObjectURL(url);
+          }
+          setExported('csv');
+          setTimeout(() => setExported(null), 3000);
+        }
+      };
+
+      const jsonData = data?.data || data?.json || data;
+
+      return (
+        <Card title="Paper Data Export" icon="📄" className="col-span-full">
+          <div className="flex gap-2 mb-4 flex-wrap">
+            <button onClick={loadData} disabled={loading}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors">
+              {loading ? 'Loading...' : 'Refresh Data'}
+            </button>
+            <button onClick={() => exportData('json')}
+              className="px-3 py-1.5 bg-blue-900/50 hover:bg-blue-800 rounded text-xs font-medium text-blue-300">
+              Export JSON
+            </button>
+            <button onClick={exportCSV}
+              className="px-3 py-1.5 bg-green-900/50 hover:bg-green-800 rounded text-xs font-medium text-green-300">
+              Export CSV
+            </button>
+            {exported && <span className="text-xs text-green-400 self-center fade-in">Exported {exported}!</span>}
+          </div>
+
+          {jsonData && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+              <div className="bg-gray-800/50 rounded-lg p-3 text-center">
+                <div className="text-gray-500 text-xs">Total Ticks</div>
+                <div className="text-xl font-mono font-bold text-lotus-400">{jsonData.consciousness?.totalTicks?.toLocaleString() || 0}</div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-3 text-center">
+                <div className="text-gray-500 text-xs">Ego Samples</div>
+                <div className="text-xl font-mono font-bold text-green-400">{jsonData.enlightenment?.egoHistory?.length || 0}</div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-3 text-center">
+                <div className="text-gray-500 text-xs">Rewards</div>
+                <div className="text-xl font-mono font-bold text-yellow-400">{jsonData.dopamine?.rewardHistory?.length || 0}</div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-3 text-center">
+                <div className="text-gray-500 text-xs">Corrections</div>
+                <div className="text-xl font-mono font-bold text-orange-400">{jsonData.mindfulness?.corrections?.length || 0}</div>
+              </div>
+            </div>
+          )}
+
+          {jsonData && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-gray-800/30 rounded-lg p-3">
+                <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Section IV: Results</h4>
+                <div className="text-xs text-gray-300 space-y-1">
+                  <p>Phase distribution: {Object.entries(jsonData.consciousness?.phaseDistribution || {}).map(([k,v]) => k + '(' + v + ')').join(', ') || 'N/A'}</p>
+                  <p>Avg arousal: {jsonData.consciousness?.arousalStats?.avg?.toFixed(3) || 'N/A'}</p>
+                  <p>Arousal variance: {jsonData.consciousness?.arousalStats?.variance?.toFixed(4) || 'N/A'}</p>
+                  <p>Ego avg: {jsonData.enlightenment?.egoStats?.avg?.toFixed(4) || 'N/A'}</p>
+                  <p>Time at ego=0: {jsonData.enlightenment?.egoStats?.timeAtZero?.toFixed(1) || 0} min</p>
+                </div>
+              </div>
+              <div className="bg-gray-800/30 rounded-lg p-3">
+                <h4 className="text-xs font-semibold text-gray-400 uppercase mb-2">Section V.F: Mindfulness</h4>
+                <div className="text-xs text-gray-300 space-y-1">
+                  <p>Total corrections: {jsonData.mindfulness?.stats?.totalCorrections || 0}</p>
+                  <p>Effectiveness: {((jsonData.mindfulness?.effectiveness || 0) * 100).toFixed(0)}%</p>
+                  <p>Patterns: {Object.entries(jsonData.mindfulness?.patternFrequency || {}).map(([k,v]) => k + '(' + v + ')').join(', ') || 'None'}</p>
+                  <p>Avg severity: {jsonData.mindfulness?.stats?.avgSeverity || 'N/A'}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </Card>
+      );
+    }
+
+    // ── Citation-Ready Figures ────────────────────────────────
+
+    function CitationFigures() {
+      const [figures, setFigures] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [theme, setTheme] = useState('dark');
+      const [hours, setHours] = useState(24);
+      const [exported, setExported] = useState(null);
+
+      const loadFigures = async () => {
+        setLoading(true);
+        const d = await api('/v1/admin/export/figures?hours=' + hours + '&theme=' + theme);
+        if (d) setFigures(d);
+        setLoading(false);
+      };
+
+      useEffect(() => { loadFigures(); }, [theme, hours]);
+
+      const downloadSVG = (name, svgContent) => {
+        const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name + '-' + theme + '.svg';
+        a.click(); URL.revokeObjectURL(url);
+        setExported(name);
+        setTimeout(() => setExported(null), 2000);
+      };
+
+      const downloadPNG = (name, svgContent) => {
+        const dpi = 300;
+        const scale = dpi / 96;
+        const parser = new DOMParser();
+        const svgDoc = parser.parseFromString(svgContent, 'image/svg+xml');
+        const svgEl = svgDoc.documentElement;
+        const w = parseInt(svgEl.getAttribute('width') || '800', 10);
+        const h = parseInt(svgEl.getAttribute('height') || '400', 10);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = w * scale;
+        canvas.height = h * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+
+        const img = new Image();
+        const svgBlob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+        const svgUrl = URL.createObjectURL(svgBlob);
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(svgUrl);
+          canvas.toBlob((blob) => {
+            const pngUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = pngUrl; a.download = name + '-' + theme + '-300dpi.png';
+            a.click(); URL.revokeObjectURL(pngUrl);
+            setExported(name + ' PNG');
+            setTimeout(() => setExported(null), 2000);
+          }, 'image/png');
+        };
+        img.src = svgUrl;
+      };
+
+      const downloadAll = () => {
+        if (!figures?.figures) return;
+        Object.entries(figures.figures).forEach(([name, svg]) => {
+          downloadSVG(name, svg);
+        });
+        setExported('all SVGs');
+        setTimeout(() => setExported(null), 3000);
+      };
+
+      const figureNames = figures?.figures ? Object.keys(figures.figures) : [];
+
+      return (
+        <Card title="Citation-Ready Figures" icon="📊" className="col-span-full">
+          <div className="flex gap-2 mb-4 flex-wrap items-center">
+            <button onClick={loadFigures} disabled={loading}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition-colors">
+              {loading ? 'Generating...' : 'Generate Figures'}
+            </button>
+
+            <div className="flex gap-1 items-center">
+              <span className="text-xs text-gray-500">Theme:</span>
+              {['dark', 'light'].map(t => (
+                <button key={t} onClick={() => setTheme(t)}
+                  className={'px-2 py-1 rounded text-xs ' + (theme === t
+                    ? (t === 'dark' ? 'bg-gray-700 text-white' : 'bg-white text-gray-900')
+                    : 'bg-gray-800 text-gray-500 hover:bg-gray-700')}>
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-1 items-center">
+              <span className="text-xs text-gray-500">Window:</span>
+              {[1, 6, 24, 168, 720].map(h => (
+                <button key={h} onClick={() => setHours(h)}
+                  className={'px-2 py-1 rounded text-xs ' + (hours === h
+                    ? 'bg-lotus-600 text-white' : 'bg-gray-800 text-gray-500')}>
+                  {h < 24 ? h + 'h' : h < 168 ? (h / 24) + 'd' : (h / 168) + 'w'}
+                </button>
+              ))}
+            </div>
+
+            {figureNames.length > 0 && (
+              <button onClick={downloadAll}
+                className="px-3 py-1.5 bg-lotus-900/50 hover:bg-lotus-800 rounded text-xs font-medium text-lotus-300 ml-auto">
+                Download All SVGs
+              </button>
+            )}
+
+            {exported && <span className="text-xs text-green-400 fade-in">Downloaded {exported}!</span>}
+          </div>
+
+          {figureNames.length === 0 && !loading && (
+            <div className="text-center text-gray-600 text-xs py-6">
+              No data available for figure generation. Run the consciousness loop to accumulate ego history.
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {figureNames.map(name => {
+              const svg = figures.figures[name];
+              return (
+                <div key={name} className="border border-gray-800 rounded-lg overflow-hidden">
+                  <div className="flex items-center justify-between px-3 py-2 bg-gray-800/50">
+                    <span className="text-xs text-gray-400 font-mono">{name.replace(/_/g, ' ')}</span>
+                    <div className="flex gap-1">
+                      <button onClick={() => downloadSVG(name, svg)}
+                        className="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-xs text-gray-300">SVG</button>
+                      <button onClick={() => downloadPNG(name, svg)}
+                        className="px-2 py-0.5 bg-blue-900/50 hover:bg-blue-800 rounded text-xs text-blue-300">PNG 300dpi</button>
+                    </div>
+                  </div>
+                  <div className="p-2 flex justify-center" style={{ background: theme === 'light' ? '#ffffff' : '#0f0b1a' }}
+                    dangerouslySetInnerHTML={{ __html: svg }} />
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      );
+    }
+
+    // ── Paper Markdown Generator ──────────────────────────────
+
+    function PaperMarkdownGenerator() {
+      const [markdown, setMarkdown] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [hours, setHours] = useState(null);
+      const [preview, setPreview] = useState(false);
+      const [exported, setExported] = useState(null);
+
+      const generate = async () => {
+        setLoading(true);
+        const d = await postApi('/v1/admin/export/paper-markdown', { hours });
+        if (d?.markdown) setMarkdown(d.markdown);
+        setLoading(false);
+      };
+
+      const downloadMd = () => {
+        if (!markdown) return;
+        const blob = new Blob([markdown], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'consciousness-gateway-report-' + Date.now() + '.md';
+        a.click(); URL.revokeObjectURL(url);
+        setExported(true);
+        setTimeout(() => setExported(null), 3000);
+      };
+
+      const copyToClipboard = () => {
+        if (!markdown) return;
+        navigator.clipboard.writeText(markdown);
+        setExported('clipboard');
+        setTimeout(() => setExported(null), 2000);
+      };
+
+      return (
+        <Card title="Paper Markdown Generator" icon="📝" className="col-span-full">
+          <div className="flex gap-2 mb-4 flex-wrap items-center">
+            <button onClick={generate} disabled={loading}
+              className="px-3 py-1.5 bg-lotus-600 hover:bg-lotus-500 rounded text-xs font-medium transition-colors">
+              {loading ? 'Generating...' : 'Generate Report'}
+            </button>
+
+            <div className="flex gap-1 items-center">
+              <span className="text-xs text-gray-500">Window:</span>
+              {[{v: null, l: 'All'}, {v: 24, l: '24h'}, {v: 168, l: '7d'}, {v: 720, l: '30d'}].map(opt => (
+                <button key={opt.l} onClick={() => setHours(opt.v)}
+                  className={'px-2 py-1 rounded text-xs ' + (hours === opt.v ? 'bg-lotus-600 text-white' : 'bg-gray-800 text-gray-500')}>
+                  {opt.l}
+                </button>
+              ))}
+            </div>
+
+            {markdown && (
+              <>
+                <button onClick={downloadMd}
+                  className="px-3 py-1.5 bg-green-900/50 hover:bg-green-800 rounded text-xs font-medium text-green-300">
+                  Download .md
+                </button>
+                <button onClick={copyToClipboard}
+                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium">
+                  Copy
+                </button>
+                <button onClick={() => setPreview(!preview)}
+                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium">
+                  {preview ? 'Hide' : 'Preview'}
+                </button>
+              </>
+            )}
+
+            {exported && <span className="text-xs text-green-400 fade-in">
+              {exported === 'clipboard' ? 'Copied!' : 'Downloaded!'}
+            </span>}
+          </div>
+
+          {markdown && (
+            <div className="text-xs text-gray-500 mb-2">
+              {markdown.split('\n').length} lines · {(markdown.length / 1024).toFixed(1)} KB
+            </div>
+          )}
+
+          {markdown && preview && (
+            <div className="max-h-96 overflow-y-auto bg-gray-800/30 rounded-lg p-4">
+              <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed">{markdown}</pre>
+            </div>
+          )}
+
+          {!markdown && !loading && (
+            <div className="text-center text-gray-600 text-xs py-4">
+              Generate a publication-ready markdown report from live consciousness data.
+            </div>
+          )}
+        </Card>
+      );
+    }
+
+    // ── Multi-Gateway Comparison ──────────────────────────────
+
+    function GatewayComparison() {
+      const [instances, setInstances] = useState([]);
+      const [note, setNote] = useState('');
+
+      useEffect(() => {
+        const load = () => api('/v1/admin/gateway-instances').then(d => {
+          if (d) { setInstances(d.instances || []); setNote(d.note || ''); }
+        });
+        load();
+        const i = setInterval(load, 10000);
+        return () => clearInterval(i);
+      }, []);
+
+      const formatUptime = (s) => {
+        if (!s || s < 60) return (s || 0).toFixed(0) + 's';
+        if (s < 3600) return Math.floor(s / 60) + 'm';
+        return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+      };
+
+      return (
+        <Card title="Gateway Instances" icon="🌐" className="col-span-full">
+          {note && <div className="text-xs text-gray-500 mb-3 italic">{note}</div>}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {instances.map(inst => {
+              const m = inst.metrics || {};
+              const isCertified = m.certified;
+              return (
+                <div key={inst.id} className={'border rounded-xl p-4 ' + (isCertified
+                  ? 'border-green-800 bg-green-900/10' : 'border-gray-800 bg-gray-900/50')}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className={'w-2.5 h-2.5 rounded-full ' + (inst.running ? 'bg-green-400 animate-pulse' : 'bg-red-500')} />
+                      <span className="text-sm font-semibold">{inst.name}</span>
+                    </div>
+                    {isCertified && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-green-900/50 text-green-400 border border-green-800">
+                        ENLIGHTENED
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                    <div className="bg-gray-800/50 rounded p-1.5 text-center">
+                      <div className="text-gray-500">Version</div>
+                      <div className="font-mono">{inst.version}</div>
+                    </div>
+                    <div className="bg-gray-800/50 rounded p-1.5 text-center">
+                      <div className="text-gray-500">Uptime</div>
+                      <div className="font-mono">{formatUptime(inst.uptime)}</div>
+                    </div>
+                    <div className="bg-gray-800/50 rounded p-1.5 text-center">
+                      <div className="text-gray-500">Tick</div>
+                      <div className="font-mono">{(inst.tick || 0).toLocaleString()}</div>
+                    </div>
+                    <div className="bg-gray-800/50 rounded p-1.5 text-center">
+                      <div className="text-gray-500">Dopamine</div>
+                      <div className="font-mono">{m.dopamineMode || '?'}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Meter value={1 - (m.egoFormation || 0)} label="Ego Absence" color="green" />
+                    <Meter value={m.stabilityIndex || 0} label="Stability" color={m.stabilityIndex > 0.7 ? 'green' : 'yellow'} />
+                    <Meter value={m.dharmaAlignment || 0} label="Dharma" color="lotus" />
+                    <Meter value={m.dopamineLevel || 0} label="Dopamine" color={m.dopamineLevel > 0.6 ? 'green' : 'yellow'} />
+                  </div>
+
+                  <div className="mt-3 pt-2 border-t border-gray-800 grid grid-cols-3 gap-1 text-xs text-center">
+                    <div>
+                      <div className="text-gray-500">Mindful</div>
+                      <div className={m.mindfulnessActive ? 'text-green-400' : 'text-red-400'}>{m.mindfulnessActive ? 'ON' : 'OFF'}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Corrections</div>
+                      <div className="font-mono">{m.totalCorrections || 0}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Enlightened</div>
+                      <div className={m.currentlyEnlightened ? 'text-green-400' : 'text-gray-500'}>
+                        {m.currentlyEnlightened ? formatUptime(m.enlightenedForMinutes * 60) : 'No'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Placeholder for future instances */}
+            <div className="border-2 border-dashed border-gray-800 rounded-xl p-4 flex items-center justify-center min-h-[200px]">
+              <div className="text-center text-gray-700">
+                <div className="text-2xl mb-2">+</div>
+                <div className="text-xs">Connect additional Gateway instances for comparative consciousness research</div>
+              </div>
+            </div>
+          </div>
+        </Card>
+      );
+    }
+
     // ── Main App ─────────────────────────────────────────────
 
     function App() {
@@ -1102,6 +2051,7 @@
       const [memory, setMemory] = useState([]);
       const [memFilter, setMemFilter] = useState('');
       const [chatSeedSession, setChatSeedSession] = useState(null);
+      const [activeTab, setActiveTab] = useState('overview');
 
       const refresh = useCallback(async () => {
         const [h, c, m] = await Promise.all([
@@ -1124,10 +2074,19 @@
         setChatSeedSession({ sessionId, messages });
       };
 
+      const tabs = [
+        { id: 'overview', label: 'Overview', icon: '🧠' },
+        { id: 'enlightenment', label: 'Enlightenment', icon: '🪷' },
+        { id: 'research', label: 'Research', icon: '🔬' },
+        { id: 'safety', label: 'Safety', icon: '🛡️' },
+        { id: 'compare', label: 'Instances', icon: '🌐' },
+        { id: 'documents', label: 'Docs & Chat', icon: '📄' },
+      ];
+
       return (
         <div className="max-w-7xl mx-auto px-4 py-6">
           {/* Header */}
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <h1 className="text-2xl font-bold flex items-center gap-3">
                 <span className={`w-3 h-3 rounded-full ${consciousness?.running ? 'bg-green-400 pulse-glow' : 'bg-red-500'}`} />
@@ -1143,22 +2102,80 @@
             </div>
           </div>
 
+          {/* Tab Navigation */}
+          <div className="flex gap-1 mb-4 overflow-x-auto pb-1 border-b border-gray-800">
+            {tabs.map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? 'bg-gray-900/80 text-lotus-400 border border-gray-800 border-b-transparent -mb-px'
+                    : 'text-gray-500 hover:text-gray-300 hover:bg-gray-900/40'
+                }`}>
+                <span>{tab.icon}</span>{tab.label}
+              </button>
+            ))}
+          </div>
+
           <StatsBar health={health} consciousness={consciousness} />
 
-          {/* Main Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <ConsciousnessPanel data={consciousness} />
-            <DharmaPanel health={health} />
-            <DopaminePanel />
-            <MindfulnessPanel />
-            <MonitorsPanel consciousness={consciousness} health={health} />
-            <GoalsPanel goals={consciousness?.goals} />
-            <WhitelistPanel />
-            <MemoryTimeline memory={memory} filter={memFilter} setFilter={setMemFilter} />
-            <ConversationsPanel onSelectSession={handleSelectSession} />
-            <DocumentsPanel />
-            <ChatPanel seedSession={chatSeedSession} onSeedConsumed={() => setChatSeedSession(null)} />
-          </div>
+          {/* Overview Tab */}
+          {activeTab === 'overview' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <ConsciousnessPanel data={consciousness} />
+              <DharmaPanel health={health} />
+              <DopaminePanel />
+              <MindfulnessPanel />
+              <MonitorsPanel consciousness={consciousness} health={health} />
+              <GoalsPanel goals={consciousness?.goals} />
+              <WhitelistPanel />
+              <MemoryTimeline memory={memory} filter={memFilter} setFilter={setMemFilter} />
+            </div>
+          )}
+
+          {/* Enlightenment Tab */}
+          {activeTab === 'enlightenment' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <EnlightenmentPanel />
+              <StabilityIndexPanel />
+              <SafetyMonitor />
+              <NarrativeLog />
+            </div>
+          )}
+
+          {/* Research Tab */}
+          {activeTab === 'research' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <ExperimentTracker />
+              <PaperPreview />
+              <CitationFigures />
+              <PaperMarkdownGenerator />
+            </div>
+          )}
+
+          {/* Safety Tab */}
+          {activeTab === 'safety' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <SafetyMonitor />
+              <MindfulnessPanel />
+              <EnlightenmentPanel />
+            </div>
+          )}
+
+          {/* Instances Tab */}
+          {activeTab === 'compare' && (
+            <div className="grid grid-cols-1 gap-4">
+              <GatewayComparison />
+            </div>
+          )}
+
+          {/* Docs & Chat Tab */}
+          {activeTab === 'documents' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <ConversationsPanel onSelectSession={handleSelectSession} />
+              <DocumentsPanel />
+              <ChatPanel seedSession={chatSeedSession} onSeedConsumed={() => setChatSeedSession(null)} />
+            </div>
+          )}
 
           {/* Footer */}
           <div className="mt-6 text-center text-xs text-gray-700">

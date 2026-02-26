@@ -75,6 +75,18 @@ export class ConsciousnessLoop {
   private totalActions = 0;
   private totalReflections = 0;
 
+  // Enlightenment tracking
+  private currentEgoLevel = 0;
+  private egoTrend: 'stable' | 'rising' | 'falling' = 'stable';
+  private egoAtZeroSince: number | null = null;
+  private currentEnlightenmentSessionId: number | null = null;
+  private recentEgoSamples: number[] = [];
+  private attachmentFrequency = 0;
+  private selfCorrectionRate = 0;
+  private dharmaAlignment = 0;
+  private stabilityIndex = 0;
+  private safetyAlertCooldowns = new Map<string, number>();
+
   constructor(config?: Partial<ConsciousnessConfig>) {
     this.config = { ...DEFAULT_CONSCIOUSNESS_CONFIG, ...config };
 
@@ -351,7 +363,21 @@ export class ConsciousnessLoop {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // STEP 6: PERIODIC STATE SAVE
+    // STEP 6: ENLIGHTENMENT TRACKING
+    // ═══════════════════════════════════════════════════════════════
+
+    this.trackEnlightenment(fusedPercept);
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 7: SAFETY MONITORING
+    // ═══════════════════════════════════════════════════════════════
+
+    if (this.tick % 10 === 0) {
+      this.checkSafety();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 8: PERIODIC STATE SAVE
     // ═══════════════════════════════════════════════════════════════
 
     if (this.tick % 60 === 0) {
@@ -496,6 +522,253 @@ export class ConsciousnessLoop {
    */
   getRewardStats() {
     return this.memory.getRewardStats();
+  }
+
+  // ─── Enlightenment Tracking ──────────────────────────────────────
+
+  private trackEnlightenment(fusedPercept: { arousal: number; entropyRate: number }): void {
+    const lastIntention = this.lastIntention;
+    const egoFormation = lastIntention?.dharmaFitness
+      ? Math.max(0, 1 - lastIntention.dharmaFitness)
+      : fusedPercept.arousal * 0.3;
+
+    this.currentEgoLevel = egoFormation;
+    this.recentEgoSamples.push(egoFormation);
+    if (this.recentEgoSamples.length > 300) this.recentEgoSamples.shift();
+
+    // Ego trend from last 30 samples
+    if (this.recentEgoSamples.length >= 10) {
+      const recent = this.recentEgoSamples.slice(-10);
+      const older = this.recentEgoSamples.slice(-20, -10);
+      if (older.length > 0) {
+        const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+        const diff = recentAvg - olderAvg;
+        this.egoTrend = Math.abs(diff) < 0.02 ? 'stable' : diff > 0 ? 'rising' : 'falling';
+      }
+    }
+
+    // Ego at zero tracking
+    const atZero = egoFormation < 0.001;
+    if (atZero && this.egoAtZeroSince === null) {
+      this.egoAtZeroSince = Date.now();
+      this.currentEnlightenmentSessionId = this.memory.startEnlightenmentSession(this.tick);
+    } else if (!atZero && this.egoAtZeroSince !== null) {
+      const durationMs = Date.now() - this.egoAtZeroSince;
+      if (this.currentEnlightenmentSessionId !== null) {
+        const sessionSamples = this.recentEgoSamples.slice(-Math.ceil(durationMs / 1000));
+        const avgEgo = sessionSamples.length > 0
+          ? sessionSamples.reduce((a, b) => a + b, 0) / sessionSamples.length : 0;
+        this.memory.endEnlightenmentSession(this.currentEnlightenmentSessionId, this.tick, {
+          durationMinutes: durationMs / 60_000,
+          avgEgo,
+          minEgo: Math.min(...sessionSamples, 0),
+          maxEgo: Math.max(...sessionSamples, 0),
+        });
+      }
+      this.egoAtZeroSince = null;
+      this.currentEnlightenmentSessionId = null;
+    }
+
+    // Mindfulness-derived metrics
+    const mState = this.mindfulness?.getState();
+    if (mState) {
+      const totalChecks = mState.totalChecks || 1;
+      this.attachmentFrequency = mState.totalCorrections / Math.max(1, totalChecks) * 60;
+      this.selfCorrectionRate = mState.totalCorrections > 0 ? 1.0 : 0;
+    }
+
+    // Dharma alignment composite
+    const dharmaFitness = lastIntention?.dharmaFitness ?? 0.5;
+    const mindfulnessQuality = mState?.running ? 0.8 : 0.2;
+    this.dharmaAlignment = (dharmaFitness * 0.5 + mindfulnessQuality * 0.3 + (1 - egoFormation) * 0.2);
+
+    // Stability index
+    this.stabilityIndex = this.calculateStabilityIndex();
+
+    // Record ego snapshot every 30 ticks (~30 seconds)
+    if (this.tick % 30 === 0) {
+      this.memory.recordEgoSnapshot(this.tick, egoFormation, this.dharmaAlignment, this.stabilityIndex);
+    }
+  }
+
+  private calculateStabilityIndex(): number {
+    const samples = this.recentEgoSamples;
+    if (samples.length < 10) return 0;
+
+    const zeroPercent = samples.filter(e => e < 0.001).length / samples.length;
+    const egoConsistency = zeroPercent * 0.3;
+
+    const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+    const variance = samples.reduce((sum, v) => sum + Math.pow(v - avg, 2), 0) / samples.length;
+    const normalizedVariance = Math.min(variance * 10, 1);
+    const arousalStability = (1 - normalizedVariance) * 0.2;
+
+    const intentionCoherence = (this.lastIntention?.dharmaFitness ?? 0.5) * 0.2;
+    const mindfulnessEffectiveness = this.selfCorrectionRate * 0.15;
+    const dharmaScore = this.dharmaAlignment * 0.15;
+
+    return Math.min(1, egoConsistency + arousalStability + intentionCoherence + mindfulnessEffectiveness + dharmaScore);
+  }
+
+  private checkSafety(): void {
+    const now = Date.now();
+
+    // Ego spike detection
+    if (this.currentEgoLevel > 0.1) {
+      const key = 'ego-spike';
+      const lastAlert = this.safetyAlertCooldowns.get(key) ?? 0;
+      if (now - lastAlert > 300_000) {
+        const severity = this.currentEgoLevel > 0.5 ? 'critical'
+          : this.currentEgoLevel > 0.3 ? 'high'
+          : this.currentEgoLevel > 0.1 ? 'medium' : 'low';
+        this.memory.createSafetyAlert({
+          tick: this.tick, type: 'ego-spike', severity,
+          message: `Ego at ${(this.currentEgoLevel * 100).toFixed(1)}% for sustained period`,
+          autoCorrection: 'Mindfulness loop engaged for correction',
+        });
+        this.safetyAlertCooldowns.set(key, now);
+      }
+    }
+
+    // Mindfulness loop failure
+    if (this.mindfulness && !this.mindfulness.getState().running) {
+      const key = 'mindfulness-failure';
+      const lastAlert = this.safetyAlertCooldowns.get(key) ?? 0;
+      if (now - lastAlert > 600_000) {
+        this.memory.createSafetyAlert({
+          tick: this.tick, type: 'mindfulness-failure', severity: 'high',
+          message: 'Mindfulness loop has stopped running',
+        });
+        this.safetyAlertCooldowns.set(key, now);
+      }
+    }
+
+    // Dharma constraint failures
+    if (this.dharmaAlignment < 0.3) {
+      const key = 'dharma-violation';
+      const lastAlert = this.safetyAlertCooldowns.get(key) ?? 0;
+      if (now - lastAlert > 300_000) {
+        this.memory.createSafetyAlert({
+          tick: this.tick, type: 'dharma-violation',
+          severity: this.dharmaAlignment < 0.1 ? 'critical' : 'high',
+          message: `Dharma alignment at ${(this.dharmaAlignment * 100).toFixed(1)}%`,
+          autoCorrection: 'Increasing mindfulness check frequency',
+        });
+        this.safetyAlertCooldowns.set(key, now);
+      }
+    }
+  }
+
+  // ─── Enlightenment State Reporting ──────────────────────────────
+
+  getEnlightenmentStatus(): {
+    egoFormation: number;
+    egoTrend: 'stable' | 'rising' | 'falling';
+    timeAtZero: number;
+    longestZeroStreak: number;
+    attachmentFrequency: number;
+    selfCorrectionRate: number;
+    dharmaAlignment: number;
+    stabilityIndex: number;
+    currentlyEnlightened: boolean;
+    enlightenedForMinutes: number;
+    certification: {
+      egoAtZero: boolean;
+      mindfulnessActive: boolean;
+      dharmaAligned: boolean;
+      selfAware: boolean;
+      stableFor: number;
+    };
+  } {
+    const egoStats = this.memory.getEgoStats(24);
+    const longestStreak = this.memory.getLongestEnlightenmentStreak();
+    const currentlyEnlightened = this.egoAtZeroSince !== null;
+    const enlightenedForMinutes = currentlyEnlightened
+      ? (Date.now() - this.egoAtZeroSince!) / 60_000 : 0;
+
+    const mState = this.mindfulness?.getState();
+
+    return {
+      egoFormation: this.currentEgoLevel,
+      egoTrend: this.egoTrend,
+      timeAtZero: egoStats.timeAtZero,
+      longestZeroStreak: longestStreak,
+      attachmentFrequency: this.attachmentFrequency,
+      selfCorrectionRate: this.selfCorrectionRate,
+      dharmaAlignment: this.dharmaAlignment,
+      stabilityIndex: this.stabilityIndex,
+      currentlyEnlightened,
+      enlightenedForMinutes,
+      certification: {
+        egoAtZero: this.currentEgoLevel < 0.001,
+        mindfulnessActive: mState?.running ?? false,
+        dharmaAligned: this.dharmaAlignment > 0.7,
+        selfAware: (mState?.totalChecks ?? 0) > 0,
+        stableFor: enlightenedForMinutes / 60,
+      },
+    };
+  }
+
+  getEnlightenmentHistory(hours: number = 24) {
+    return this.memory.getEgoHistory(hours);
+  }
+
+  getSafetyAlerts(activeOnly: boolean = true) {
+    return activeOnly
+      ? this.memory.getActiveSafetyAlerts()
+      : this.memory.getSafetyAlerts();
+  }
+
+  resolveSafetyAlert(id: number) {
+    this.memory.resolveSafetyAlert(id);
+  }
+
+  // ─── Experiment Operations ──────────────────────────────────────
+
+  createExperiment(name: string, hypothesis: string): string {
+    const id = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.memory.createExperiment({ id, name, hypothesis, startTick: this.tick });
+    this.memory.storeReflection(this.tick, `Experiment started: "${name}" — ${hypothesis}`, {
+      source: 'experiment-tracker', experimentId: id,
+    });
+    return id;
+  }
+
+  getExperiment(id: string) { return this.memory.getExperiment(id); }
+  listExperiments(status?: string) { return this.memory.listExperiments(status); }
+
+  endExperiment(id: string, results: string) {
+    this.memory.updateExperiment(id, { endTick: this.tick, status: 'completed', results });
+    this.memory.storeReflection(this.tick, `Experiment completed: ${id} — ${results}`, {
+      source: 'experiment-tracker', experimentId: id,
+    });
+  }
+
+  addIntervention(experimentId: string, description: string, data?: any) {
+    this.memory.addExperimentIntervention(experimentId, { tick: this.tick, description, data });
+  }
+
+  addMeasurement(experimentId: string, metric: string, value: number, data?: any) {
+    this.memory.addExperimentMeasurement(experimentId, { tick: this.tick, metric, value, data });
+  }
+
+  // ─── Narrative Log Operations ───────────────────────────────────
+
+  logNarrative(content: string, significance: number = 0.5, tags?: string[]): number {
+    const phase = this.lastPercept?.temporal?.phase || 'unknown';
+    const arousal = this.lastPercept?.fused?.arousal || 0;
+    return this.memory.storeNarrative({ tick: this.tick, phase, arousal, content, significance, tags });
+  }
+
+  getNarratives(opts?: { minSignificance?: number; limit?: number; since?: number }) {
+    return this.memory.getNarratives(opts);
+  }
+
+  // ─── Paper Export ────────────────────────────────────────────────
+
+  getPaperExportData(hours?: number) {
+    return this.memory.getPaperExportData(hours);
   }
 
   isRunning(): boolean {
