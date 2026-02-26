@@ -116,6 +116,13 @@ export class MindfulnessLoop {
   private lastCheckTick = 0;
   private lastCorrectionTick: number | null = null;
 
+  private lastCorrectionByPattern = new Map<string, number>();
+  private consecutiveTriggers = new Map<string, number>();
+  private patternCooldownMs = 300_000; // 5 minutes
+  private conversationLookbackMs = 300_000; // 5 minutes
+  private escapeHatchThreshold = 3; // consecutive triggers before temporary suppression
+  private escapeHatchCooldownMs = 600_000; // 10 minutes suppression after escape hatch
+
   private memory: ConsciousnessMemory;
   private dopamine: DopamineSystem;
   private conversationStore: ConversationStore | null;
@@ -186,25 +193,65 @@ export class MindfulnessLoop {
 
     let recentMessages: ConversationMessage[] = [];
     if (this.conversationStore) {
-      recentMessages = this.conversationStore.getRecentMessages(10);
+      const allRecent = this.conversationStore.getRecentMessages(20);
+      const cutoff = Date.now() - this.conversationLookbackMs;
+      recentMessages = allRecent.filter(m => m.timestamp >= cutoff);
     }
 
-    const signals = this.detectAttachment(
+    const rawSignals = this.detectAttachment(
       dopamineState,
       recentIntentions,
       recentMessages,
     );
 
+    const signals = this.applyLoopProtection(rawSignals);
+
     if (signals.length > 0) {
       await this.selfCorrect(signals);
+      for (const s of signals) {
+        this.lastCorrectionByPattern.set(s.type, Date.now());
+        this.consecutiveTriggers.set(s.type, (this.consecutiveTriggers.get(s.type) ?? 0) + 1);
+      }
+    } else {
+      for (const key of this.consecutiveTriggers.keys()) {
+        if (!rawSignals.some(s => s.type === key)) {
+          this.consecutiveTriggers.delete(key);
+        }
+      }
     }
 
-    // Periodic persistence
     if (this.totalChecks % 10 === 0) {
       this.persist();
     }
 
     return signals;
+  }
+
+  private applyLoopProtection(signals: AttachmentSignal[]): AttachmentSignal[] {
+    const now = Date.now();
+    return signals.filter(signal => {
+      const lastCorrection = this.lastCorrectionByPattern.get(signal.type);
+      if (!lastCorrection) return true;
+
+      const elapsed = now - lastCorrection;
+      const consecutive = this.consecutiveTriggers.get(signal.type) ?? 0;
+
+      // Escape hatch: if triggered 3+ times consecutively, suppress for 10 minutes
+      if (consecutive >= this.escapeHatchThreshold) {
+        if (elapsed < this.escapeHatchCooldownMs) {
+          return false;
+        }
+        // Reset after suppression period expires
+        this.consecutiveTriggers.set(signal.type, 0);
+      }
+
+      // Standard cooldown: skip if corrected within last 5 minutes
+      if (elapsed < this.patternCooldownMs) {
+        return false;
+      }
+
+      return true;
+    });
   }
 
   // ─── Detection ────────────────────────────────────────────────────
