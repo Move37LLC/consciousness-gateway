@@ -436,7 +436,7 @@ export class ConsciousnessMemory {
       tick: r.tick,
       timestamp: r.timestamp,
       attachmentsDetected: r.attachments_detected,
-      maxSeverity: r.max_severity,
+      maxSeverity: r.max_severity as 'low' | 'medium' | 'high' | 'critical',
       patterns: JSON.parse(r.patterns || '[]'),
       selfCorrected: r.self_corrected === 1,
       arousalAdjustment: r.arousal_adjustment,

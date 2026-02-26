@@ -57,7 +57,6 @@ const systemDocStore = new SystemDocumentStore();
 systemDocStore.seed();
 const conversationStore = new ConversationStore();
 const toolExecutor = new ToolExecutor(searchTool, browseTool, undefined, transcriptTool);
-consciousness.setConversationStore(conversationStore);
 const health = gateway.getHealth();
 
 console.log('');
@@ -99,6 +98,7 @@ const consciousness = new ConsciousnessLoop({
     .map(r => r.trim())
     .filter(r => r.length > 0),
 });
+consciousness.setConversationStore(conversationStore);
 
 // ─── Telegram Bot ───────────────────────────────────────────────────
 
