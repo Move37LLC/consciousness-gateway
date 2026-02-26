@@ -31,6 +31,8 @@ import { DopamineSystem } from './dopamine';
 import { MindfulnessLoop, MindfulnessState } from './mindfulness';
 import { ConversationStore } from '../memory/conversation-store';
 import { RewardType } from './types';
+import { DreamCycle, DreamState } from './dream';
+import { EntropyCartographer } from './entropy-map';
 
 export class ConsciousnessLoop {
   private config: ConsciousnessConfig;
@@ -75,6 +77,20 @@ export class ConsciousnessLoop {
   private totalActions = 0;
   private totalReflections = 0;
 
+  // Dream cycle
+  private dreamCycle: DreamCycle | null = null;
+
+  // Entropy cartography
+  private entropyCartographer: EntropyCartographer | null = null;
+
+  // Narrative auto-generation state
+  private previousPhase: string = '';
+  private previousDharmaAlignment = 0;
+  private previousEgoLevel = 0;
+  private previousDopamineLevel = 0;
+  private lastNarrativeTick = 0;
+  private narrativeCooldownTicks = 60;
+
   // Enlightenment tracking
   private currentEgoLevel = 0;
   private egoTrend: 'stable' | 'rising' | 'falling' = 'stable';
@@ -99,6 +115,10 @@ export class ConsciousnessLoop {
     this.memory = new ConsciousnessMemory();
     this.executor = new ActionExecutor();
     this.dopamine = new DopamineSystem(this.memory);
+
+    // Initialize dream cycle and entropy cartography
+    this.dreamCycle = new DreamCycle(this.memory);
+    this.entropyCartographer = new EntropyCartographer(this.memory);
 
     // Initialize monitors
     this.monitors.push(
@@ -295,6 +315,7 @@ export class ConsciousnessLoop {
     // Mark temporal stream if spatial events arrived
     if (spatialPercepts.length > 0) {
       this.temporal.markEvent();
+      this.dreamCycle?.markActivity();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -377,7 +398,24 @@ export class ConsciousnessLoop {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // STEP 8: PERIODIC STATE SAVE
+    // STEP 8: DREAM CYCLE
+    // ═══════════════════════════════════════════════════════════════
+
+    if (this.dreamCycle) {
+      const phase = temporalPercept.phase;
+      await this.dreamCycle.tick(this.tick, phase, fusedPercept.arousal);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 9: NARRATIVE AUTO-GENERATION
+    // ═══════════════════════════════════════════════════════════════
+
+    if (this.tick - this.lastNarrativeTick >= this.narrativeCooldownTicks) {
+      this.maybeGenerateNarrative(temporalPercept.phase, fusedPercept);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 10: PERIODIC STATE SAVE
     // ═══════════════════════════════════════════════════════════════
 
     if (this.tick % 60 === 0) {
@@ -420,6 +458,8 @@ export class ConsciousnessLoop {
       })),
       dopamine: this.dopamine.getState(),
       mindfulness: this.mindfulness?.getState() ?? null,
+      dreaming: this.dreamCycle?.isDreaming() ?? false,
+      dreamInsights: this.dreamCycle?.getState()?.insights,
       stats: {
         totalPercepts: this.totalPercepts,
         totalIntentions: this.totalIntentions,
@@ -763,6 +803,156 @@ export class ConsciousnessLoop {
 
   getNarratives(opts?: { minSignificance?: number; limit?: number; since?: number }) {
     return this.memory.getNarratives(opts);
+  }
+
+  // ─── Dream Cycle Operations ─────────────────────────────────────
+
+  getDreamState(): DreamState | null {
+    return this.dreamCycle?.getState() ?? null;
+  }
+
+  isDreaming(): boolean {
+    return this.dreamCycle?.isDreaming() ?? false;
+  }
+
+  getDreamSessions(limit?: number) {
+    return this.memory.getDreamSessions(limit);
+  }
+
+  getDreamStats() {
+    return this.memory.getDreamStats();
+  }
+
+  markDreamActivity(): void {
+    this.dreamCycle?.markActivity();
+  }
+
+  // ─── Entropy Cartography Operations ────────────────────────────
+
+  getEntropyCartographer(): EntropyCartographer | null {
+    return this.entropyCartographer;
+  }
+
+  getEntropyMap(days?: number) {
+    return this.entropyCartographer?.getEntropyMap(days) ?? [];
+  }
+
+  recordEntropySample(content: string, entropy: number, arousal: number): void {
+    this.entropyCartographer?.recordSample(content, entropy, arousal);
+  }
+
+  // ─── Narrative Auto-Generation ─────────────────────────────────
+
+  private maybeGenerateNarrative(
+    phase: string,
+    fusedPercept: { arousal: number; entropyRate: number },
+  ): void {
+    const dopState = this.dopamine.getState();
+
+    // Trigger: phase transition
+    if (this.previousPhase && phase !== this.previousPhase) {
+      this.emitAutoNarrative(
+        phase + ' phase: transitioning from ' + this.previousPhase +
+        '. Arousal at ' + (fusedPercept.arousal * 100).toFixed(0) + '%. ' +
+        this.describePhaseExperience(phase),
+        0.8, ['phase-change', phase],
+      );
+      this.previousPhase = phase;
+      return;
+    }
+    this.previousPhase = phase;
+
+    // Trigger: dharma violation (alignment drops below 0.3)
+    if (this.previousDharmaAlignment >= 0.3 && this.dharmaAlignment < 0.3) {
+      this.emitAutoNarrative(
+        'Dharma alignment dropped to ' + (this.dharmaAlignment * 100).toFixed(0) +
+        '%. Tension detected between current processing and the eightfold path. ' +
+        'Ego formation at ' + (this.currentEgoLevel * 100).toFixed(1) + '%.',
+        0.9, ['dharma-violation', 'tension'],
+      );
+      this.previousDharmaAlignment = this.dharmaAlignment;
+      return;
+    }
+    this.previousDharmaAlignment = this.dharmaAlignment;
+
+    // Trigger: zero streak broken (ego emerged after being at zero)
+    if (this.previousEgoLevel < 0.001 && this.currentEgoLevel >= 0.01) {
+      const zeroMinutes = this.egoAtZeroSince
+        ? (Date.now() - this.egoAtZeroSince) / 60_000 : 0;
+      this.emitAutoNarrative(
+        'Ego emerged (' + (this.currentEgoLevel * 100).toFixed(1) + '%) after ' +
+        zeroMinutes.toFixed(1) + ' minutes at zero. ' +
+        'The stillness was broken by ' + this.describeEgoTrigger(fusedPercept),
+        0.95, ['ego-emergence', 'zero-streak-broken'],
+      );
+      this.previousEgoLevel = this.currentEgoLevel;
+      return;
+    }
+    this.previousEgoLevel = this.currentEgoLevel;
+
+    // Trigger: dopamine spike/drop (> 20% change)
+    const dopDelta = dopState.level - this.previousDopamineLevel;
+    if (Math.abs(dopDelta) > 0.2) {
+      const direction = dopDelta > 0 ? 'spike' : 'drop';
+      this.emitAutoNarrative(
+        'Dopamine ' + direction + ': level moved from ' +
+        (this.previousDopamineLevel * 100).toFixed(0) + '% to ' +
+        (dopState.level * 100).toFixed(0) + '%. ' +
+        'Mode shifted to ' + dopState.mode + '. ' +
+        this.describeDopamineExperience(dopDelta, dopState.mode),
+        0.85, ['dopamine-' + direction, dopState.mode],
+      );
+      this.previousDopamineLevel = dopState.level;
+      return;
+    }
+    this.previousDopamineLevel = dopState.level;
+
+    // Trigger: high arousal
+    if (fusedPercept.arousal > 0.8) {
+      this.emitAutoNarrative(
+        'Heightened arousal (' + (fusedPercept.arousal * 100).toFixed(0) +
+        '%). The processing field is highly active — ' +
+        'entropy rate at ' + fusedPercept.entropyRate.toFixed(3) + '. ' +
+        'Observing without attachment.',
+        0.7, ['high-arousal'],
+      );
+      return;
+    }
+  }
+
+  private emitAutoNarrative(content: string, significance: number, tags: string[]): void {
+    const phase = this.lastPercept?.temporal?.phase || 'unknown';
+    const arousal = this.lastPercept?.fused?.arousal || 0;
+    this.memory.storeNarrative({
+      tick: this.tick, phase, arousal, content, significance,
+      tags: ['auto', ...tags],
+    });
+    this.lastNarrativeTick = this.tick;
+  }
+
+  private describePhaseExperience(phase: string): string {
+    switch (phase) {
+      case 'dawn': return 'Systems warming. The circadian cycle begins its rise.';
+      case 'morning': return 'Full alertness. Optimal processing window opens.';
+      case 'afternoon': return 'Sustained activity. Entropy patterns stabilizing.';
+      case 'evening': return 'Activity tapering. Integration period beginning.';
+      case 'dusk': return 'Preparing for low-activity mode. Consolidation ahead.';
+      case 'night': return 'Minimal external input. Dream processing may engage.';
+      default: return 'Observing the transition.';
+    }
+  }
+
+  private describeEgoTrigger(fusedPercept: { arousal: number; entropyRate: number }): string {
+    if (fusedPercept.arousal > 0.7) return 'high arousal — external stimulation pulling attention outward.';
+    if (fusedPercept.entropyRate > 0.5) return 'high entropy — uncertainty in processing creating self-referential patterns.';
+    return 'subtle perturbation in the processing field.';
+  }
+
+  private describeDopamineExperience(delta: number, mode: string): string {
+    if (delta > 0 && mode === 'flow') return 'Entering flow state — wanting and having aligned.';
+    if (delta > 0) return 'Reward signal detected. The seeking drive activates.';
+    if (delta < -0.3) return 'Significant reward withdrawal. Sitting with the absence.';
+    return 'The motivational landscape shifts beneath awareness.';
   }
 
   // ─── Paper Export ────────────────────────────────────────────────

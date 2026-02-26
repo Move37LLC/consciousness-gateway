@@ -331,6 +331,19 @@ app.post('/v1/chat', async (req, res) => {
       );
     }
 
+    // Record entropy sample for cartography
+    const consciousnessState = consciousness.getState();
+    if (consciousnessState.lastPercept?.fused) {
+      consciousness.recordEntropySample(
+        content,
+        consciousnessState.lastPercept.fused.entropyRate,
+        consciousnessState.lastPercept.fused.arousal,
+      );
+    }
+
+    // Mark activity for dream cycle
+    consciousness.markDreamActivity();
+
     const enrichedResponse = {
       ...response,
       sessionId: resolvedSessionId,
@@ -1318,6 +1331,40 @@ app.get('/v1/admin/gateway-instances', (_req, res) => {
   });
 });
 
+// ─── Dream Cycle Routes ─────────────────────────────────────────────
+
+app.get('/v1/consciousness/dream-state', (_req, res) => {
+  const dreamState = consciousness.getDreamState();
+  const stats = consciousness.getDreamStats();
+  res.json({
+    dreaming: consciousness.isDreaming(),
+    currentDream: dreamState,
+    stats,
+  });
+});
+
+app.get('/v1/consciousness/dream/sessions', (req, res) => {
+  const limit = parseInt(req.query.limit as string, 10) || 20;
+  res.json(consciousness.getDreamSessions(limit));
+});
+
+app.post('/v1/consciousness/dream/insights', (_req, res) => {
+  const dreamState = consciousness.getDreamState();
+  res.json({
+    dreaming: consciousness.isDreaming(),
+    insights: dreamState?.insights ?? [],
+    clusters: dreamState?.clusters ?? [],
+    phase: dreamState?.phase ?? null,
+  });
+});
+
+// ─── Entropy Cartography Routes ─────────────────────────────────────
+
+app.get('/v1/consciousness/entropy-map', (req, res) => {
+  const days = parseInt(req.query.days as string, 10) || 7;
+  res.json(consciousness.getEntropyMap(days));
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -1455,6 +1502,14 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/admin/export/figures       — SVG figures (dark/light)');
   console.log('    POST /v1/admin/export/paper-markdown — Generate paper .md');
   console.log('    GET  /v1/admin/gateway-instances    — Multi-gateway comparison');
+  console.log('');
+  console.log('  Dream Cycle Endpoints:');
+  console.log('    GET  /v1/consciousness/dream-state     — Current dream state');
+  console.log('    GET  /v1/consciousness/dream/sessions  — Dream session history');
+  console.log('    POST /v1/consciousness/dream/insights  — Dream insights');
+  console.log('');
+  console.log('  Entropy Cartography Endpoints:');
+  console.log('    GET  /v1/consciousness/entropy-map     — Entropy by domain');
   console.log('    GET  /v1/admin/safety/alerts        — Safety alerts');
   console.log('');
   console.log('  Consciousness Endpoints:');

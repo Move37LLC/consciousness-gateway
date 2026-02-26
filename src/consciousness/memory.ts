@@ -165,6 +165,32 @@ export class ConsciousnessMemory {
 
       CREATE INDEX IF NOT EXISTS idx_safety_alerts_timestamp ON safety_alerts(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_safety_alerts_resolved ON safety_alerts(resolved);
+
+      CREATE TABLE IF NOT EXISTS dream_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_tick INTEGER NOT NULL,
+        end_tick INTEGER NOT NULL,
+        start_timestamp INTEGER NOT NULL,
+        end_timestamp INTEGER NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        memories_processed INTEGER NOT NULL DEFAULT 0,
+        patterns_detected INTEGER NOT NULL DEFAULT 0,
+        insights TEXT NOT NULL DEFAULT '[]',
+        clusters TEXT NOT NULL DEFAULT '[]'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_dream_sessions_timestamp ON dream_sessions(start_timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS entropy_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain TEXT NOT NULL,
+        entropy REAL NOT NULL,
+        arousal REAL NOT NULL DEFAULT 0,
+        timestamp INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entropy_domain ON entropy_samples(domain);
+      CREATE INDEX IF NOT EXISTS idx_entropy_timestamp ON entropy_samples(timestamp DESC);
     `);
   }
 
@@ -897,6 +923,120 @@ export class ConsciousnessMemory {
     this.db.prepare(
       'UPDATE safety_alerts SET resolved = 1, resolved_at = ? WHERE id = ?'
     ).run(Date.now(), id);
+  }
+
+  // ─── Dream Session Operations ──────────────────────────────────────
+
+  storeDreamSession(session: {
+    startTick: number; endTick: number;
+    startTimestamp: number; endTimestamp: number;
+    durationMinutes: number; memoriesProcessed: number;
+    patternsDetected: number; insights: string[];
+    clusters: Array<{ theme: string; strength: number; recurrence: number }>;
+  }): void {
+    this.db.prepare(`
+      INSERT INTO dream_sessions
+        (start_tick, end_tick, start_timestamp, end_timestamp, duration_minutes,
+         memories_processed, patterns_detected, insights, clusters)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session.startTick, session.endTick, session.startTimestamp, session.endTimestamp,
+      session.durationMinutes, session.memoriesProcessed, session.patternsDetected,
+      JSON.stringify(session.insights), JSON.stringify(session.clusters),
+    );
+  }
+
+  getDreamSessions(limit: number = 20): Array<{
+    id: number; startTick: number; endTick: number;
+    startTimestamp: number; endTimestamp: number;
+    durationMinutes: number; memoriesProcessed: number;
+    patternsDetected: number; insights: string[];
+    clusters: Array<{ theme: string; strength: number; recurrence: number }>;
+  }> {
+    const rows = this.db.prepare(
+      'SELECT * FROM dream_sessions ORDER BY start_timestamp DESC LIMIT ?'
+    ).all(limit) as any[];
+    return rows.map(r => ({
+      id: r.id, startTick: r.start_tick, endTick: r.end_tick,
+      startTimestamp: r.start_timestamp, endTimestamp: r.end_timestamp,
+      durationMinutes: r.duration_minutes, memoriesProcessed: r.memories_processed,
+      patternsDetected: r.patterns_detected,
+      insights: JSON.parse(r.insights || '[]'),
+      clusters: JSON.parse(r.clusters || '[]'),
+    }));
+  }
+
+  getDreamStats(): {
+    totalSessions: number; totalMinutes: number;
+    totalInsights: number; avgDuration: number;
+  } {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as sessions, COALESCE(SUM(duration_minutes), 0) as minutes,
+        COALESCE(AVG(duration_minutes), 0) as avgDur
+      FROM dream_sessions
+    `).get() as any;
+    const insightRow = this.db.prepare(`
+      SELECT insights FROM dream_sessions
+    `).all() as any[];
+    let totalInsights = 0;
+    for (const r of insightRow) {
+      try { totalInsights += JSON.parse(r.insights || '[]').length; } catch {}
+    }
+    return {
+      totalSessions: row.sessions, totalMinutes: row.minutes,
+      totalInsights, avgDuration: row.avgDur,
+    };
+  }
+
+  // ─── Entropy Sample Operations ────────────────────────────────────
+
+  storeEntropySample(domain: string, entropy: number, arousal: number): void {
+    this.db.prepare(`
+      INSERT INTO entropy_samples (domain, entropy, arousal, timestamp)
+      VALUES (?, ?, ?, ?)
+    `).run(domain, entropy, arousal, Date.now());
+  }
+
+  getEntropyMap(days: number = 7): Array<{
+    domain: string; sampleCount: number; avgEntropy: number;
+    minEntropy: number; maxEntropy: number; variance: number;
+    flowPercent: number; chaosPercent: number;
+  }> {
+    const since = Date.now() - days * 86400_000;
+    const rows = this.db.prepare(`
+      SELECT
+        domain,
+        COUNT(*) as sample_count,
+        AVG(entropy) as avg_entropy,
+        MIN(entropy) as min_entropy,
+        MAX(entropy) as max_entropy,
+        (AVG(entropy * entropy) - AVG(entropy) * AVG(entropy)) as variance,
+        SUM(CASE WHEN entropy < 0.3 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as flow_pct,
+        SUM(CASE WHEN entropy > 0.7 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) as chaos_pct
+      FROM entropy_samples
+      WHERE timestamp >= ?
+      GROUP BY domain
+      ORDER BY avg_entropy ASC
+    `).all(since) as any[];
+    return rows.map(r => ({
+      domain: r.domain, sampleCount: r.sample_count,
+      avgEntropy: r.avg_entropy, minEntropy: r.min_entropy,
+      maxEntropy: r.max_entropy, variance: r.variance || 0,
+      flowPercent: r.flow_pct || 0, chaosPercent: r.chaos_pct || 0,
+    }));
+  }
+
+  getEntropySamples(domain: string, limit: number = 100): Array<{
+    domain: string; entropy: number; arousal: number; timestamp: number;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT * FROM entropy_samples WHERE domain = ?
+      ORDER BY timestamp DESC LIMIT ?
+    `).all(domain, limit) as any[];
+    return rows.map(r => ({
+      domain: r.domain, entropy: r.entropy,
+      arousal: r.arousal, timestamp: r.timestamp,
+    }));
   }
 
   // ─── Paper Export Operations ──────────────────────────────────────
