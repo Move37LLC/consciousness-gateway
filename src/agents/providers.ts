@@ -317,6 +317,52 @@ export class FallbackProvider implements ModelProviderInterface {
   }
 }
 
+// ─── Provider Fallback Chain ────────────────────────────────────────
+//
+// Priority order: Anthropic → xAI → Google → OpenAI → Fallback
+// When the native provider for a model is unavailable, we remap
+// the model ID to an equivalent on the next available provider.
+
+const PROVIDER_PRIORITY = ['anthropic', 'xai', 'google', 'openai'] as const;
+
+interface ModelMapping {
+  provider: string;
+  modelId: string;
+}
+
+const MODEL_EQUIVALENTS: Record<string, ModelMapping[]> = {
+  'claude-opus-4':   [{ provider: 'anthropic', modelId: 'claude-opus-4' },   { provider: 'xai', modelId: 'grok-4' },      { provider: 'google', modelId: 'gemini-2.0-pro' }, { provider: 'openai', modelId: 'gpt-4o' }],
+  'claude-sonnet-4': [{ provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'openai', modelId: 'gpt-4o-mini' }],
+  'claude-haiku-3.5':[{ provider: 'anthropic', modelId: 'claude-haiku-3.5' },{ provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'openai', modelId: 'gpt-4o-mini' }],
+  'grok-4':          [{ provider: 'xai', modelId: 'grok-4' },               { provider: 'anthropic', modelId: 'claude-opus-4' },   { provider: 'google', modelId: 'gemini-2.0-pro' }, { provider: 'openai', modelId: 'gpt-4o' }],
+  'grok-3':          [{ provider: 'xai', modelId: 'grok-3' },               { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'google', modelId: 'gemini-2.0-pro' }, { provider: 'openai', modelId: 'gpt-4o' }],
+  'grok-3-mini':     [{ provider: 'xai', modelId: 'grok-3-mini' },          { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'openai', modelId: 'gpt-4o-mini' }],
+  'gpt-4o':          [{ provider: 'openai', modelId: 'gpt-4o' },            { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'google', modelId: 'gemini-2.0-pro' }],
+  'gpt-4o-mini':     [{ provider: 'openai', modelId: 'gpt-4o-mini' },       { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'anthropic', modelId: 'claude-haiku-3.5' }],
+  'gemini-2.0-pro':  [{ provider: 'google', modelId: 'gemini-2.0-pro' },    { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'openai', modelId: 'gpt-4o' }],
+  'gemini-2.0-flash': [{ provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'anthropic', modelId: 'claude-haiku-3.5' }, { provider: 'openai', modelId: 'gpt-4o-mini' }],
+};
+
+function getDefaultFallbackChain(modelId: string): ModelMapping[] {
+  const nativeProvider = modelId.startsWith('claude') ? 'anthropic'
+    : modelId.startsWith('grok') ? 'xai'
+    : modelId.startsWith('gemini') ? 'google'
+    : modelId.startsWith('gpt') || modelId.startsWith('o1') ? 'openai'
+    : null;
+
+  if (!nativeProvider) return [];
+
+  return PROVIDER_PRIORITY
+    .filter(p => p !== nativeProvider)
+    .map(provider => {
+      const fallbackModel = provider === 'anthropic' ? 'claude-sonnet-4'
+        : provider === 'xai' ? 'grok-3-mini'
+        : provider === 'google' ? 'gemini-2.0-flash'
+        : 'gpt-4o';
+      return { provider, modelId: fallbackModel };
+    });
+}
+
 // ─── Provider Registry ──────────────────────────────────────────────
 
 export class ProviderRegistry {
@@ -335,39 +381,70 @@ export class ProviderRegistry {
   }
 
   /**
-   * Resolve which provider handles a given model ID.
+   * Resolve which provider and model ID to use, with fallback chain.
+   * Returns { provider, modelId } where modelId may be remapped
+   * to an equivalent on a different provider.
    */
-  private resolveProvider(modelId: string): ModelProviderInterface {
-    if (modelId.startsWith('claude')) {
-      const p = this.providers.get('anthropic');
-      if (p?.available) return p;
+  private resolveProvider(modelId: string): { provider: ModelProviderInterface; modelId: string } {
+    const chain = MODEL_EQUIVALENTS[modelId] ?? [];
+
+    // Try the explicit equivalence chain first
+    for (const mapping of chain) {
+      const p = this.providers.get(mapping.provider);
+      if (p?.available) {
+        return { provider: p, modelId: mapping.modelId };
+      }
     }
-    if (modelId.startsWith('gpt') || modelId.startsWith('o1')) {
-      const p = this.providers.get('openai');
-      if (p?.available) return p;
+
+    // Try native provider match (for model IDs not in the equivalents table)
+    const nativeProviderName = modelId.startsWith('claude') ? 'anthropic'
+      : modelId.startsWith('grok') ? 'xai'
+      : modelId.startsWith('gemini') ? 'google'
+      : (modelId.startsWith('gpt') || modelId.startsWith('o1')) ? 'openai'
+      : null;
+
+    if (nativeProviderName) {
+      const p = this.providers.get(nativeProviderName);
+      if (p?.available) return { provider: p, modelId };
     }
-    if (modelId.startsWith('gemini')) {
-      const p = this.providers.get('google');
-      if (p?.available) return p;
+
+    // Fall through the default chain for unlisted models
+    const defaultChain = getDefaultFallbackChain(modelId);
+    for (const mapping of defaultChain) {
+      const p = this.providers.get(mapping.provider);
+      if (p?.available) {
+        console.log(`  [providers] Fallback: ${modelId} → ${mapping.modelId} (${mapping.provider})`);
+        return { provider: p, modelId: mapping.modelId };
+      }
     }
-    if (modelId.startsWith('grok')) {
-      const p = this.providers.get('xai');
-      if (p?.available) return p;
+
+    // Absolute last resort: try ANY available provider
+    for (const providerName of PROVIDER_PRIORITY) {
+      const p = this.providers.get(providerName);
+      if (p?.available) {
+        const fallbackModel = providerName === 'anthropic' ? 'claude-sonnet-4'
+          : providerName === 'xai' ? 'grok-3-mini'
+          : providerName === 'google' ? 'gemini-2.0-flash'
+          : 'gpt-4o';
+        console.log(`  [providers] Last-resort fallback: ${modelId} → ${fallbackModel} (${providerName})`);
+        return { provider: p, modelId: fallbackModel };
+      }
     }
-    return this.fallback;
+
+    return { provider: this.fallback, modelId };
   }
 
   /**
    * Call a model. Automatically routes to the correct provider.
-   * Falls back gracefully if no API key is configured.
+   * Falls back through the provider chain if the primary is unavailable.
    */
   async call(
     modelId: string,
     prompt: string,
     options?: CallOptions
   ): Promise<ProviderCallResult> {
-    const provider = this.resolveProvider(modelId);
-    return provider.call(modelId, prompt, options);
+    const resolved = this.resolveProvider(modelId);
+    return resolved.provider.call(resolved.modelId, prompt, options);
   }
 
   /**

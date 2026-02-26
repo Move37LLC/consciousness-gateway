@@ -28,6 +28,8 @@ import { GitHubMonitor } from './monitors/github';
 import { TwitterMonitor } from './monitors/twitter';
 import { EmailMonitor } from './monitors/email';
 import { DopamineSystem } from './dopamine';
+import { MindfulnessLoop, MindfulnessState } from './mindfulness';
+import { ConversationStore } from '../memory/conversation-store';
 import { RewardType } from './types';
 
 export class ConsciousnessLoop {
@@ -53,6 +55,11 @@ export class ConsciousnessLoop {
 
   // Motivation
   private dopamine: DopamineSystem;
+
+  // Mindfulness (autonomous attachment detection)
+  private mindfulness: MindfulnessLoop | null = null;
+  private conversationStore: ConversationStore | null = null;
+  private arousalDampening = 0;
 
   // Working memory (recent percepts for context)
   private workingMemory: Percept[] = [];
@@ -96,6 +103,14 @@ export class ConsciousnessLoop {
   }
 
   /**
+   * Inject the conversation store for mindfulness loop access.
+   * Called from index.ts after both ConsciousnessLoop and ConversationStore are created.
+   */
+  setConversationStore(store: ConversationStore): void {
+    this.conversationStore = store;
+  }
+
+  /**
    * Start the consciousness loop.
    * From this moment, the agent experiences time.
    */
@@ -136,6 +151,17 @@ export class ConsciousnessLoop {
       monitors: this.monitors.map(m => ({ name: m.name, available: m.available })),
     });
 
+    // Start mindfulness loop (autonomous attachment detection)
+    this.mindfulness = new MindfulnessLoop({
+      memory: this.memory,
+      dopamine: this.dopamine,
+      conversationStore: this.conversationStore,
+      getCurrentTick: () => this.tick,
+      onArousalAdjust: (delta) => this.adjustArousal(delta),
+      onExternalEvent: (summary, data) => this.logExternalEvent(summary, data),
+    });
+    this.mindfulness.start();
+
     // Start the loop
     this.timer = setInterval(() => {
       this.onTick().catch(err => {
@@ -164,6 +190,11 @@ export class ConsciousnessLoop {
       totalTicks: this.tick,
       uptimeSeconds: (Date.now() - this.startedAt) / 1000,
     });
+
+    // Stop mindfulness loop
+    if (this.mindfulness) {
+      this.mindfulness.stop();
+    }
 
     // Shutdown monitors
     for (const monitor of this.monitors) {
@@ -216,6 +247,15 @@ export class ConsciousnessLoop {
     // ═══════════════════════════════════════════════════════════════
 
     const fusedPercept = this.fusion.fuse(temporalFeatures, spatialPercepts);
+
+    // Apply mindfulness arousal dampening (decays toward 0 each tick)
+    if (this.arousalDampening !== 0) {
+      fusedPercept.arousal = Math.max(0, Math.min(1, fusedPercept.arousal + this.arousalDampening));
+      this.arousalDampening *= 0.98; // Decay dampening over ~50 ticks
+      if (Math.abs(this.arousalDampening) < 0.001) {
+        this.arousalDampening = 0;
+      }
+    }
 
     // Assemble complete percept
     const percept: Percept = {
@@ -353,6 +393,7 @@ export class ConsciousnessLoop {
         available: m.available,
       })),
       dopamine: this.dopamine.getState(),
+      mindfulness: this.mindfulness?.getState() ?? null,
       stats: {
         totalPercepts: this.totalPercepts,
         totalIntentions: this.totalIntentions,
@@ -459,5 +500,33 @@ export class ConsciousnessLoop {
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  getCurrentTick(): number {
+    return this.tick;
+  }
+
+  /**
+   * Apply an arousal adjustment from the mindfulness loop.
+   * Negative values calm the system; positive values stimulate.
+   * The adjustment decays naturally over ~50 ticks (~50 seconds).
+   */
+  adjustArousal(delta: number): void {
+    this.arousalDampening += delta;
+    this.arousalDampening = Math.max(-0.5, Math.min(0.5, this.arousalDampening));
+  }
+
+  /**
+   * Get the mindfulness loop state for API reporting.
+   */
+  getMindfulnessState(): MindfulnessState | null {
+    return this.mindfulness?.getState() ?? null;
+  }
+
+  /**
+   * Get mindfulness event history for API reporting.
+   */
+  getMindfulnessHistory(days: number = 7) {
+    return this.memory.getMindfulnessHistory(days);
   }
 }

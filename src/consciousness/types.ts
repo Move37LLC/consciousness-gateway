@@ -243,6 +243,7 @@ export interface ConsciousnessState {
   goals: Goal[];
   monitors: Array<{ name: string; channel: string; available: boolean }>;
   dopamine: DopamineState | null;
+  mindfulness: unknown;
   stats: {
     totalPercepts: number;
     totalIntentions: number;

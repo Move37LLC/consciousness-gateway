@@ -230,6 +230,29 @@ export class DopamineSystem {
     this.lastUpdateTick = currentTick;
   }
 
+  // ─── Mindfulness Interface ─────────────────────────────────────
+
+  /**
+   * Temper a drive by reducing its current need.
+   * Called by the mindfulness loop when it detects misaligned wanting.
+   *
+   * This is NOT suppression — it's releasing attachment to the drive.
+   * The drive still exists; it just loses its grip on decision-making.
+   */
+  temperDrive(driveId: string, reductionPercent: number): void {
+    const drive = this.drives.find(d => d.id === driveId);
+    if (drive) {
+      const before = drive.currentNeed;
+      drive.currentNeed = Math.max(0, drive.currentNeed * (1 - reductionPercent));
+      drive.priorityBonus = Math.round(drive.currentNeed * 3);
+      this.persist();
+      console.log(
+        `  [dopamine] Drive "${driveId}" tempered: ` +
+        `${(before * 100).toFixed(0)}% → ${(drive.currentNeed * 100).toFixed(0)}%`,
+      );
+    }
+  }
+
   // ─── Drive Queries ──────────────────────────────────────────────
 
   /**

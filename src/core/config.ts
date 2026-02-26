@@ -70,6 +70,34 @@ export const DEFAULT_CONFIG: GatewayConfig = {
         },
       ],
     },
+    {
+      id: 'xai',
+      name: 'xAI',
+      models: [
+        {
+          id: 'grok-4',
+          provider: 'xai',
+          capabilities: {
+            text: true, vision: true, audio: false,
+            reasoning: 0.95, creativity: 0.92, safety: 0.85, speed: 0.5,
+          },
+          costPer1kTokens: 0.06,
+          maxTokens: 131072,
+          consciousnessDepth: 0.90,
+        },
+        {
+          id: 'grok-3-mini',
+          provider: 'xai',
+          capabilities: {
+            text: true, vision: false, audio: false,
+            reasoning: 0.85, creativity: 0.80, safety: 0.82, speed: 0.9,
+          },
+          costPer1kTokens: 0.005,
+          maxTokens: 131072,
+          consciousnessDepth: 0.60,
+        },
+      ],
+    },
   ],
 
   dharma: {

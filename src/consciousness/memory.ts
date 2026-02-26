@@ -83,6 +83,20 @@ export class ConsciousnessMemory {
 
       CREATE INDEX IF NOT EXISTS idx_reward_timestamp ON reward_events(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_reward_type ON reward_events(type);
+
+      CREATE TABLE IF NOT EXISTS mindfulness_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        attachments_detected INTEGER NOT NULL,
+        max_severity TEXT NOT NULL,
+        patterns TEXT NOT NULL DEFAULT '[]',
+        self_corrected INTEGER NOT NULL DEFAULT 1,
+        arousal_adjustment REAL NOT NULL DEFAULT 0,
+        drive_tempered TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_mindfulness_timestamp ON mindfulness_events(timestamp DESC);
     `);
   }
 
@@ -372,6 +386,179 @@ export class ConsciousnessMemory {
     } catch {
       return defaultValue;
     }
+  }
+
+  // ─── Mindfulness Operations ──────────────────────────────────────
+
+  storeMindfulnessEvent(event: {
+    tick: number;
+    timestamp: number;
+    attachmentsDetected: number;
+    maxSeverity: string;
+    patterns: string[];
+    selfCorrected: boolean;
+    arousalAdjustment: number;
+    driveTempered: string | null;
+  }): void {
+    this.db.prepare(`
+      INSERT INTO mindfulness_events
+        (tick, timestamp, attachments_detected, max_severity, patterns, self_corrected, arousal_adjustment, drive_tempered)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.tick,
+      event.timestamp,
+      event.attachmentsDetected,
+      event.maxSeverity,
+      JSON.stringify(event.patterns),
+      event.selfCorrected ? 1 : 0,
+      event.arousalAdjustment,
+      event.driveTempered,
+    );
+  }
+
+  getRecentMindfulnessEvents(limit: number = 10): Array<{
+    id: number;
+    tick: number;
+    timestamp: number;
+    attachmentsDetected: number;
+    maxSeverity: string;
+    patterns: string[];
+    selfCorrected: boolean;
+    arousalAdjustment: number;
+    driveTempered: string | null;
+  }> {
+    const rows = this.db.prepare(
+      'SELECT * FROM mindfulness_events ORDER BY timestamp DESC LIMIT ?'
+    ).all(limit) as any[];
+
+    return rows.map(r => ({
+      id: r.id,
+      tick: r.tick,
+      timestamp: r.timestamp,
+      attachmentsDetected: r.attachments_detected,
+      maxSeverity: r.max_severity,
+      patterns: JSON.parse(r.patterns || '[]'),
+      selfCorrected: r.self_corrected === 1,
+      arousalAdjustment: r.arousal_adjustment,
+      driveTempered: r.drive_tempered,
+    }));
+  }
+
+  getMindfulnessStats(): {
+    totalChecks: number;
+    totalCorrections: number;
+    todayCorrections: number;
+    avgSeverity: string;
+    patternCounts: Record<string, number>;
+    lastCheckTick: number;
+    lastCorrectionTick: number | null;
+  } {
+    const total = this.db.prepare(
+      'SELECT COUNT(*) as count FROM mindfulness_events'
+    ).get() as { count: number };
+
+    const todayStart = Date.now() - 86400_000;
+    const today = this.db.prepare(
+      'SELECT COUNT(*) as count FROM mindfulness_events WHERE timestamp >= ?'
+    ).get(todayStart) as { count: number };
+
+    const severityRows = this.db.prepare(
+      'SELECT max_severity, COUNT(*) as count FROM mindfulness_events GROUP BY max_severity'
+    ).all() as Array<{ max_severity: string; count: number }>;
+
+    // Compute average severity
+    const severityWeights: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+    let severitySum = 0;
+    let severityCount = 0;
+    for (const row of severityRows) {
+      severitySum += (severityWeights[row.max_severity] ?? 0) * row.count;
+      severityCount += row.count;
+    }
+    const avgWeight = severityCount > 0 ? severitySum / severityCount : 0;
+    const avgSeverity =
+      avgWeight <= 1.5 ? 'low' :
+      avgWeight <= 2.5 ? 'medium' :
+      avgWeight <= 3.5 ? 'high' :
+      'critical';
+
+    // Count patterns
+    const allEvents = this.db.prepare(
+      'SELECT patterns FROM mindfulness_events'
+    ).all() as Array<{ patterns: string }>;
+
+    const patternCounts: Record<string, number> = {};
+    for (const row of allEvents) {
+      try {
+        const patterns: string[] = JSON.parse(row.patterns);
+        for (const p of patterns) {
+          const type = p.split(':')[0]?.trim() || p;
+          patternCounts[type] = (patternCounts[type] || 0) + 1;
+        }
+      } catch {
+        // skip malformed
+      }
+    }
+
+    return {
+      totalChecks: this.loadState<number>('mindfulness_total_checks', 0),
+      totalCorrections: total.count,
+      todayCorrections: today.count,
+      avgSeverity,
+      patternCounts,
+      lastCheckTick: this.loadState<number>('mindfulness_last_check_tick', 0),
+      lastCorrectionTick: this.loadState<number | null>('mindfulness_last_correction_tick', null),
+    };
+  }
+
+  getMindfulnessHistory(days: number = 7): Array<{
+    date: string;
+    corrections: number;
+    avgSeverity: string;
+    patterns: Record<string, number>;
+  }> {
+    const since = Date.now() - days * 86400_000;
+    const rows = this.db.prepare(`
+      SELECT * FROM mindfulness_events WHERE timestamp >= ? ORDER BY timestamp ASC
+    `).all(since) as any[];
+
+    const byDay = new Map<string, { corrections: number; severities: number[]; patterns: Record<string, number> }>();
+
+    for (const row of rows) {
+      const date = new Date(row.timestamp).toISOString().slice(0, 10);
+      if (!byDay.has(date)) {
+        byDay.set(date, { corrections: 0, severities: [], patterns: {} });
+      }
+      const day = byDay.get(date)!;
+      day.corrections++;
+
+      const severityWeights: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+      day.severities.push(severityWeights[row.max_severity] ?? 0);
+
+      try {
+        const patterns: string[] = JSON.parse(row.patterns);
+        for (const p of patterns) {
+          const type = p.split(':')[0]?.trim() || p;
+          day.patterns[type] = (day.patterns[type] || 0) + 1;
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    const result: Array<{ date: string; corrections: number; avgSeverity: string; patterns: Record<string, number> }> = [];
+    for (const [date, data] of byDay) {
+      const avg = data.severities.length > 0
+        ? data.severities.reduce((a, b) => a + b, 0) / data.severities.length
+        : 0;
+      result.push({
+        date,
+        corrections: data.corrections,
+        avgSeverity: avg <= 1.5 ? 'low' : avg <= 2.5 ? 'medium' : avg <= 3.5 ? 'high' : 'critical',
+        patterns: data.patterns,
+      });
+    }
+
+    return result;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────

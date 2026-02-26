@@ -57,6 +57,7 @@ const systemDocStore = new SystemDocumentStore();
 systemDocStore.seed();
 const conversationStore = new ConversationStore();
 const toolExecutor = new ToolExecutor(searchTool, browseTool, undefined, transcriptTool);
+consciousness.setConversationStore(conversationStore);
 const health = gateway.getHealth();
 
 console.log('');
@@ -204,10 +205,11 @@ app.post('/v1/chat', async (req, res) => {
       }).join('\n');
     }
 
-    // Default to 'gateway' (self) personality when none specified
+    // Default to 'kern' (builder) personality when none specified
+    // Gateway (self) should only be used when explicitly requested for introspection
     const resolvedPersonality: VoiceId = (personality === 'beaumont' || personality === 'kern' || personality === 'gateway')
       ? personality
-      : 'gateway';
+      : 'kern';
 
     const systemDocs = systemDocStore.getForPersonality(resolvedPersonality);
     const ctx = buildPersonalityContext(resolvedPersonality, consciousness, {
@@ -801,6 +803,31 @@ app.get('/v1/dopamine/rewards', (req, res) => {
   res.json({ hours, rewards, stats });
 });
 
+// ─── Mindfulness Routes ─────────────────────────────────────────────
+
+app.get('/v1/mindfulness', (_req, res) => {
+  const state = consciousness.getMindfulnessState();
+  if (!state) {
+    return res.json({ enabled: false, running: false, message: 'Mindfulness loop not initialized' });
+  }
+  return res.json(state);
+});
+
+app.get('/v1/mindfulness/history', (req, res) => {
+  const days = parseInt(req.query.days as string, 10) || 7;
+  const history = consciousness.getMindfulnessHistory(days);
+  const state = consciousness.getMindfulnessState();
+  res.json({
+    days,
+    history,
+    summary: state ? {
+      totalCorrections: state.totalCorrections,
+      running: state.running,
+      checkIntervalMs: state.checkIntervalMs,
+    } : null,
+  });
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -918,6 +945,10 @@ app.listen(PORT, async () => {
   console.log('    POST /v1/dopamine/reward            — Log a reward event');
   console.log('    GET  /v1/dopamine/rewards           — Recent rewards + stats');
   console.log('    GET  /v1/dopamine/context           — Formatted context');
+  console.log('');
+  console.log('  Mindfulness Endpoints:');
+  console.log('    GET  /v1/mindfulness                — Current mindfulness state');
+  console.log('    GET  /v1/mindfulness/history         — Daily mindfulness stats');
   console.log('');
   console.log('  Consciousness Endpoints:');
   console.log('    GET  /v1/consciousness              — Current state');
