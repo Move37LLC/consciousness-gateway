@@ -1474,6 +1474,32 @@ app.post('/v1/trading/log-result', (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Trading Risk Config (proxied to gateway-trading) ───────────────
+
+app.get('/v1/trading/risk-config', async (_req, res) => {
+  const monitor = consciousness.getTradingMonitor();
+  if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
+  const config = await monitor.getRiskConfig();
+  if (!config) return res.status(503).json({ error: 'gateway-trading not reachable' });
+  res.json(config);
+});
+
+app.put('/v1/trading/risk-config', async (req, res) => {
+  const monitor = consciousness.getTradingMonitor();
+  if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
+  const updated = await monitor.setRiskConfig(req.body);
+  if (!updated) return res.status(503).json({ error: 'gateway-trading not reachable' });
+  res.json(updated);
+});
+
+app.post('/v1/trading/risk-config/reset', async (_req, res) => {
+  const monitor = consciousness.getTradingMonitor();
+  if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
+  const defaults = await monitor.resetRiskConfig();
+  if (!defaults) return res.status(503).json({ error: 'gateway-trading not reachable' });
+  res.json(defaults);
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -1637,6 +1663,9 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/trading/ego-correlation     — Ego/trading analysis');
   console.log('    POST /v1/trading/propose             — Propose + evaluate trade');
   console.log('    POST /v1/trading/log-result          — Log trade PnL result');
+  console.log('    GET  /v1/trading/risk-config         — Current risk parameters');
+  console.log('    PUT  /v1/trading/risk-config         — Update risk parameters');
+  console.log('    POST /v1/trading/risk-config/reset   — Reset to defaults');
   console.log('');
   console.log('    GET  /v1/admin/safety/alerts        — Safety alerts');
   console.log('');

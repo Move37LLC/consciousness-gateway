@@ -27,6 +27,13 @@ interface EventsResponse {
   serverTime: number;
 }
 
+export interface TradingRiskConfig {
+  stopLossPercent: number;
+  takeProfitPercent: number;
+  maxConcurrentPositions: number;
+  minPositionSize: number;
+}
+
 export class TradingMonitor implements MonitorPlugin {
   readonly name = 'trading';
   readonly channel = 'trading';
@@ -38,6 +45,8 @@ export class TradingMonitor implements MonitorPlugin {
   private consecutiveErrors = 0;
   private lastError: string | null = null;
   private pollCount = 0;
+  private cachedRiskConfig: TradingRiskConfig | null = null;
+  private riskConfigPollCounter = 0;
 
   constructor(tradingUrl?: string) {
     this.tradingUrl = tradingUrl ?? process.env.TRADING_URL ?? 'http://localhost:3001';
@@ -68,6 +77,12 @@ export class TradingMonitor implements MonitorPlugin {
 
   async poll(): Promise<SpatialPercept[]> {
     this.pollCount++;
+    this.riskConfigPollCounter++;
+
+    if (this.riskConfigPollCounter >= 10) {
+      this.riskConfigPollCounter = 0;
+      this.getRiskConfig().catch(() => {});
+    }
 
     try {
       const url = `${this.tradingUrl}/v1/events/recent?since=${this.lastPollTimestamp}`;
@@ -110,6 +125,74 @@ export class TradingMonitor implements MonitorPlugin {
     // No cleanup needed
   }
 
+  /**
+   * Fetch the current risk config from gateway-trading.
+   * Returns cached value if gateway-trading is unavailable.
+   */
+  async getRiskConfig(): Promise<TradingRiskConfig | null> {
+    try {
+      const res = await fetch(`${this.tradingUrl}/v1/config/risk`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        this.cachedRiskConfig = await res.json() as TradingRiskConfig;
+        return this.cachedRiskConfig;
+      }
+    } catch {
+      // Fall through to cached
+    }
+    return this.cachedRiskConfig;
+  }
+
+  /**
+   * Update risk config on gateway-trading.
+   * Returns the new config after validation/clamping.
+   */
+  async setRiskConfig(update: Partial<TradingRiskConfig>): Promise<TradingRiskConfig | null> {
+    try {
+      const res = await fetch(`${this.tradingUrl}/v1/config/risk`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(update),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        this.cachedRiskConfig = await res.json() as TradingRiskConfig;
+        return this.cachedRiskConfig;
+      }
+    } catch {
+      // Fall through
+    }
+    return null;
+  }
+
+  /**
+   * Reset risk config to defaults on gateway-trading.
+   */
+  async resetRiskConfig(): Promise<TradingRiskConfig | null> {
+    try {
+      const res = await fetch(`${this.tradingUrl}/v1/config/risk/reset`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        this.cachedRiskConfig = await res.json() as TradingRiskConfig;
+        return this.cachedRiskConfig;
+      }
+    } catch {
+      // Fall through
+    }
+    return null;
+  }
+
+  getCachedRiskConfig(): TradingRiskConfig | null {
+    return this.cachedRiskConfig;
+  }
+
+  getTradingUrl(): string {
+    return this.tradingUrl;
+  }
+
   getDiagnostics(): Record<string, unknown> {
     return {
       available: this.available,
@@ -120,6 +203,7 @@ export class TradingMonitor implements MonitorPlugin {
       lastPollISO: this.lastPollTimestamp ? new Date(this.lastPollTimestamp).toISOString() : null,
       consecutiveErrors: this.consecutiveErrors,
       lastError: this.lastError,
+      riskConfig: this.cachedRiskConfig,
     };
   }
 

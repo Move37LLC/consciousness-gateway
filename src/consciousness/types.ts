@@ -246,6 +246,12 @@ export interface ConsciousnessState {
   mindfulness: unknown;
   dreaming: boolean;
   dreamInsights?: string[];
+  tradingRiskConfig: {
+    stopLossPercent: number;
+    takeProfitPercent: number;
+    maxConcurrentPositions: number;
+    minPositionSize: number;
+  } | null;
   enlightenment: {
     egoFormation: number;
     egoTrend: 'stable' | 'rising' | 'falling';

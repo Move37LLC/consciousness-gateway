@@ -486,6 +486,7 @@ export class ConsciousnessLoop {
       mindfulness: this.mindfulness?.getState() ?? null,
       dreaming: this.dreamCycle?.isDreaming() ?? false,
       dreamInsights: this.dreamCycle?.getState()?.insights,
+      tradingRiskConfig: this.getTradingMonitor()?.getCachedRiskConfig() ?? null,
       enlightenment: {
         egoFormation: this.currentEgoLevel,
         egoTrend: this.egoTrend,
@@ -1006,6 +1007,10 @@ export class ConsciousnessLoop {
 
   getMemoryStore(): ConsciousnessMemory {
     return this.memory;
+  }
+
+  getTradingMonitor(): TradingMonitor | null {
+    return (this.monitors.find(m => m.name === 'trading') as TradingMonitor) ?? null;
   }
 
   getConsciousnessSnapshot(): {
