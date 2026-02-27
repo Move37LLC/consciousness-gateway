@@ -290,6 +290,8 @@ export interface ConsciousnessConfig {
     user: string;
     password: string;
   };
+  /** URL of gateway-trading events API */
+  tradingUrl?: string;
 }
 
 export const DEFAULT_CONSCIOUSNESS_CONFIG: ConsciousnessConfig = {

@@ -27,6 +27,7 @@ import { ConsciousnessMemory } from './memory';
 import { GitHubMonitor } from './monitors/github';
 import { TwitterMonitor } from './monitors/twitter';
 import { EmailMonitor } from './monitors/email';
+import { TradingMonitor } from './monitors/trading';
 import { DopamineSystem } from './dopamine';
 import { MindfulnessLoop, MindfulnessState } from './mindfulness';
 import { ConversationStore } from '../memory/conversation-store';
@@ -125,6 +126,7 @@ export class ConsciousnessLoop {
       new GitHubMonitor(this.config.githubRepos, this.config.githubToken),
       new TwitterMonitor(this.config.twitterToken),
       new EmailMonitor(this.config.emailConfig),
+      new TradingMonitor(this.config.tradingUrl),
     );
 
     // Restore tick counter if previously running
@@ -319,8 +321,32 @@ export class ConsciousnessLoop {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // STEP 2.5: DOPAMINE UPDATE
+    // STEP 2.5: TRADING PERCEPT → DOPAMINE + DOPAMINE UPDATE
     // ═══════════════════════════════════════════════════════════════
+
+    for (const sp of spatialPercepts) {
+      if (sp.channel !== 'trading') continue;
+      const eventType = sp.data.eventType as string;
+
+      if (eventType === 'trade' || eventType === 'exit') {
+        const pnl = sp.data.pnl as number | undefined;
+        const symbol = sp.data.symbol as string || 'unknown';
+
+        if (pnl !== undefined && pnl > 0) {
+          this.dopamine.processReward(
+            this.tick, 'revenue', pnl,
+            `Profitable ${eventType}: ${symbol} +$${pnl.toFixed(2)}`,
+            'trading-monitor',
+          );
+        } else if (pnl !== undefined && pnl < 0) {
+          this.dopamine.processReward(
+            this.tick, 'revenue', pnl * 0.5,
+            `Loss on ${eventType}: ${symbol} $${pnl.toFixed(2)}`,
+            'trading-monitor',
+          );
+        }
+      }
+    }
 
     this.dopamine.tick(this.tick);
 
