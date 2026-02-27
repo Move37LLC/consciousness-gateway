@@ -969,6 +969,24 @@ export class ConsciousnessLoop {
     return this.tick;
   }
 
+  getMemoryStore(): ConsciousnessMemory {
+    return this.memory;
+  }
+
+  getConsciousnessSnapshot(): {
+    tick: number; egoFormation: number; dopamineLevel: number;
+    dharmaAlignment: number; phase: string; arousal: number;
+  } {
+    return {
+      tick: this.tick,
+      egoFormation: this.currentEgoLevel,
+      dopamineLevel: this.dopamine.getState().level,
+      dharmaAlignment: this.dharmaAlignment,
+      phase: this.lastPercept?.temporal?.phase ?? 'unknown',
+      arousal: this.lastPercept?.fused?.arousal ?? 0,
+    };
+  }
+
   /**
    * Apply an arousal adjustment from the mindfulness loop.
    * Negative values calm the system; positive values stimulate.

@@ -34,6 +34,7 @@ import { ConversationStore } from './memory/conversation-store';
 import { ContextBuilder } from './memory/context-builder';
 import { detectTopics } from './tools/transcripts';
 import multer from 'multer';
+import { TradingDiscipline } from './trading/discipline';
 
 const app = express();
 app.use(express.json());
@@ -99,6 +100,10 @@ const consciousness = new ConsciousnessLoop({
     .filter(r => r.length > 0),
 });
 consciousness.setConversationStore(conversationStore);
+
+// ─── Initialize Trading Discipline ──────────────────────────────────
+
+const tradingDiscipline = new TradingDiscipline(consciousness.getMemoryStore());
 
 // ─── Telegram Bot ───────────────────────────────────────────────────
 
@@ -1365,6 +1370,103 @@ app.get('/v1/consciousness/entropy-map', (req, res) => {
   res.json(consciousness.getEntropyMap(days));
 });
 
+// ─── Trading Discipline Routes ──────────────────────────────────────
+
+app.get('/v1/trading/schedule', (_req, res) => {
+  const schedule = consciousness.getMemoryStore().getTradingSchedule();
+  const windows = schedule ? consciousness.getMemoryStore().getTradingWindows(schedule.id) : [];
+  res.json({ schedule, windows });
+});
+
+app.post('/v1/trading/schedule', (req, res) => {
+  const id = consciousness.getMemoryStore().saveTradingSchedule(req.body);
+  const schedule = consciousness.getMemoryStore().getTradingSchedule();
+  res.json({ ok: true, id, schedule });
+});
+
+app.get('/v1/trading/windows', (_req, res) => {
+  const schedule = consciousness.getMemoryStore().getTradingSchedule();
+  if (!schedule) return res.json([]);
+  res.json(consciousness.getMemoryStore().getTradingWindows(schedule.id));
+});
+
+app.post('/v1/trading/windows', (req, res) => {
+  const schedule = consciousness.getMemoryStore().getTradingSchedule();
+  if (!schedule) return res.status(400).json({ error: 'No schedule configured' });
+  const { dayOfWeek, startTime, endTime } = req.body;
+  if (dayOfWeek === undefined || !startTime || !endTime) {
+    return res.status(400).json({ error: 'Missing dayOfWeek, startTime, or endTime' });
+  }
+  const id = consciousness.getMemoryStore().addTradingWindow(schedule.id, dayOfWeek, startTime, endTime);
+  res.json({ ok: true, id });
+});
+
+app.delete('/v1/trading/windows/:id', (req, res) => {
+  consciousness.getMemoryStore().deleteTradingWindow(parseInt(req.params.id, 10));
+  res.json({ ok: true });
+});
+
+app.get('/v1/trading/log', (req, res) => {
+  const hours = parseInt(req.query.hours as string, 10) || 24;
+  res.json(tradingDiscipline.getTradeLog(hours));
+});
+
+app.get('/v1/trading/metrics', (_req, res) => {
+  res.json(tradingDiscipline.getMetrics());
+});
+
+app.get('/v1/trading/violations', (req, res) => {
+  const hours = parseInt(req.query.hours as string, 10) || 24;
+  res.json(tradingDiscipline.getViolations(hours));
+});
+
+app.get('/v1/trading/ego-correlation', (_req, res) => {
+  res.json(tradingDiscipline.getEgoCorrelation());
+});
+
+app.post('/v1/trading/propose', (req, res) => {
+  const { symbol, side, quantity, price, reason, edge, confidence, portfolioValue } = req.body;
+  if (!symbol || !side || !quantity || !price) {
+    return res.status(400).json({ error: 'Missing required fields: symbol, side, quantity, price' });
+  }
+
+  const proposal = {
+    symbol, side, quantity: parseFloat(quantity), price: parseFloat(price),
+    reason: reason || '', edge: parseFloat(edge) || 0,
+    confidence: parseFloat(confidence) || 0, portfolioValue: portfolioValue ? parseFloat(portfolioValue) : undefined,
+  };
+
+  const snapshot = consciousness.getConsciousnessSnapshot();
+  const evaluation = tradingDiscipline.evaluateProposal(proposal, snapshot);
+
+  if (evaluation.approved) {
+    tradingDiscipline.logTrade(
+      proposal, true, true, null, snapshot, evaluation.dharmaScore,
+    );
+    consciousness.markDreamActivity();
+  } else {
+    tradingDiscipline.logTrade(
+      proposal, false, false, null, snapshot, evaluation.dharmaScore,
+    );
+  }
+
+  res.json(evaluation);
+});
+
+app.post('/v1/trading/log-result', (req, res) => {
+  const { tradeId, pnl } = req.body;
+  if (tradeId === undefined || pnl === undefined) {
+    return res.status(400).json({ error: 'Missing tradeId or pnl' });
+  }
+  consciousness.getMemoryStore().logTrade({
+    tick: consciousness.getCurrentTick(), symbol: '', side: 'buy',
+    quantity: 0, price: 0, pnl: parseFloat(pnl),
+    approved: true, executed: true,
+    metadata: { resultUpdate: true, originalTradeId: tradeId },
+  });
+  res.json({ ok: true });
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -1510,6 +1612,20 @@ app.listen(PORT, async () => {
   console.log('');
   console.log('  Entropy Cartography Endpoints:');
   console.log('    GET  /v1/consciousness/entropy-map     — Entropy by domain');
+  console.log('');
+  console.log('  Trading Discipline Endpoints:');
+  console.log('    GET  /v1/trading/schedule            — Current schedule + windows');
+  console.log('    POST /v1/trading/schedule            — Update schedule');
+  console.log('    GET  /v1/trading/windows             — List trading windows');
+  console.log('    POST /v1/trading/windows             — Add window');
+  console.log('    DELETE /v1/trading/windows/:id       — Remove window');
+  console.log('    GET  /v1/trading/log                 — Trade history');
+  console.log('    GET  /v1/trading/metrics             — Discipline metrics');
+  console.log('    GET  /v1/trading/violations          — Discipline violations');
+  console.log('    GET  /v1/trading/ego-correlation     — Ego/trading analysis');
+  console.log('    POST /v1/trading/propose             — Propose + evaluate trade');
+  console.log('    POST /v1/trading/log-result          — Log trade PnL result');
+  console.log('');
   console.log('    GET  /v1/admin/safety/alerts        — Safety alerts');
   console.log('');
   console.log('  Consciousness Endpoints:');
@@ -1537,4 +1653,4 @@ app.listen(PORT, async () => {
   console.log('');
 });
 
-export { gateway, consciousness, telegram, documentStore, systemDocStore, conversationStore, transcriptTool };
+export { gateway, consciousness, telegram, documentStore, systemDocStore, conversationStore, transcriptTool, tradingDiscipline };

@@ -191,6 +191,67 @@ export class ConsciousnessMemory {
 
       CREATE INDEX IF NOT EXISTS idx_entropy_domain ON entropy_samples(domain);
       CREATE INDEX IF NOT EXISTS idx_entropy_timestamp ON entropy_samples(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS trading_schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        enabled INTEGER DEFAULT 1,
+        max_trades_per_hour INTEGER DEFAULT 2,
+        max_trades_per_day INTEGER DEFAULT 10,
+        cooldown_minutes INTEGER DEFAULT 30,
+        max_position_size_percent REAL DEFAULT 6.0,
+        reflection_required INTEGER DEFAULT 1,
+        pause_on_ego_spike INTEGER DEFAULT 1,
+        ego_threshold REAL DEFAULT 0.10,
+        created_at INTEGER,
+        updated_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS trading_windows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER NOT NULL,
+        day_of_week INTEGER NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        FOREIGN KEY (schedule_id) REFERENCES trading_schedule(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_trading_windows_schedule ON trading_windows(schedule_id);
+
+      CREATE TABLE IF NOT EXISTS trade_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL NOT NULL,
+        reason TEXT,
+        edge REAL,
+        confidence REAL,
+        pnl REAL,
+        ego_at_trade REAL,
+        dopamine_at_trade REAL,
+        dharma_score REAL,
+        approved INTEGER DEFAULT 0,
+        executed INTEGER DEFAULT 0,
+        metadata TEXT DEFAULT '{}'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_trade_log_timestamp ON trade_log(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_trade_log_symbol ON trade_log(symbol);
+
+      CREATE TABLE IF NOT EXISTS discipline_violations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        violation_type TEXT NOT NULL,
+        details TEXT,
+        auto_prevented INTEGER DEFAULT 1
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_discipline_violations_timestamp ON discipline_violations(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_discipline_violations_type ON discipline_violations(violation_type);
     `);
   }
 
@@ -1158,6 +1219,315 @@ export class ConsciousnessMemory {
 
     parts.push(`arousal: ${percept.fused.arousal.toFixed(2)}`);
     return parts.join(' | ');
+  }
+
+  // ─── Trading Schedule Operations ────────────────────────────────
+
+  getTradingSchedule(): {
+    id: number; enabled: boolean; maxTradesPerHour: number; maxTradesPerDay: number;
+    cooldownMinutes: number; maxPositionSizePercent: number; reflectionRequired: boolean;
+    pauseOnEgoSpike: boolean; egoThreshold: number;
+  } | null {
+    const row = this.db.prepare('SELECT * FROM trading_schedule ORDER BY id DESC LIMIT 1').get() as any;
+    if (!row) return null;
+    return {
+      id: row.id, enabled: !!row.enabled, maxTradesPerHour: row.max_trades_per_hour,
+      maxTradesPerDay: row.max_trades_per_day, cooldownMinutes: row.cooldown_minutes,
+      maxPositionSizePercent: row.max_position_size_percent, reflectionRequired: !!row.reflection_required,
+      pauseOnEgoSpike: !!row.pause_on_ego_spike, egoThreshold: row.ego_threshold,
+    };
+  }
+
+  saveTradingSchedule(schedule: {
+    enabled?: boolean; maxTradesPerHour?: number; maxTradesPerDay?: number;
+    cooldownMinutes?: number; maxPositionSizePercent?: number; reflectionRequired?: boolean;
+    pauseOnEgoSpike?: boolean; egoThreshold?: number;
+  }): number {
+    const existing = this.getTradingSchedule();
+    if (existing) {
+      const s = { ...existing, ...schedule };
+      this.db.prepare(`
+        UPDATE trading_schedule SET
+          enabled = ?, max_trades_per_hour = ?, max_trades_per_day = ?,
+          cooldown_minutes = ?, max_position_size_percent = ?,
+          reflection_required = ?, pause_on_ego_spike = ?, ego_threshold = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        s.enabled ? 1 : 0, s.maxTradesPerHour, s.maxTradesPerDay,
+        s.cooldownMinutes, s.maxPositionSizePercent,
+        s.reflectionRequired ? 1 : 0, s.pauseOnEgoSpike ? 1 : 0, s.egoThreshold,
+        Date.now(), existing.id,
+      );
+      return existing.id;
+    } else {
+      const now = Date.now();
+      const result = this.db.prepare(`
+        INSERT INTO trading_schedule
+          (enabled, max_trades_per_hour, max_trades_per_day, cooldown_minutes,
+           max_position_size_percent, reflection_required, pause_on_ego_spike,
+           ego_threshold, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        schedule.enabled !== false ? 1 : 0,
+        schedule.maxTradesPerHour ?? 2, schedule.maxTradesPerDay ?? 10,
+        schedule.cooldownMinutes ?? 30, schedule.maxPositionSizePercent ?? 6.0,
+        schedule.reflectionRequired !== false ? 1 : 0,
+        schedule.pauseOnEgoSpike !== false ? 1 : 0,
+        schedule.egoThreshold ?? 0.10, now, now,
+      );
+      return Number(result.lastInsertRowid);
+    }
+  }
+
+  // ─── Trading Window Operations ─────────────────────────────────
+
+  getTradingWindows(scheduleId?: number): Array<{
+    id: number; scheduleId: number; dayOfWeek: number;
+    startTime: string; endTime: string; enabled: boolean;
+  }> {
+    let sql = 'SELECT * FROM trading_windows';
+    const params: unknown[] = [];
+    if (scheduleId !== undefined) {
+      sql += ' WHERE schedule_id = ?';
+      params.push(scheduleId);
+    }
+    sql += ' ORDER BY day_of_week, start_time';
+    const rows = this.db.prepare(sql).all(...params) as any[];
+    return rows.map(r => ({
+      id: r.id, scheduleId: r.schedule_id, dayOfWeek: r.day_of_week,
+      startTime: r.start_time, endTime: r.end_time, enabled: !!r.enabled,
+    }));
+  }
+
+  addTradingWindow(scheduleId: number, dayOfWeek: number, startTime: string, endTime: string): number {
+    const result = this.db.prepare(`
+      INSERT INTO trading_windows (schedule_id, day_of_week, start_time, end_time, enabled)
+      VALUES (?, ?, ?, ?, 1)
+    `).run(scheduleId, dayOfWeek, startTime, endTime);
+    return Number(result.lastInsertRowid);
+  }
+
+  deleteTradingWindow(id: number): void {
+    this.db.prepare('DELETE FROM trading_windows WHERE id = ?').run(id);
+  }
+
+  updateTradingWindow(id: number, enabled: boolean): void {
+    this.db.prepare('UPDATE trading_windows SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id);
+  }
+
+  // ─── Trade Log Operations ──────────────────────────────────────
+
+  logTrade(entry: {
+    tick: number; symbol: string; side: string; quantity: number; price: number;
+    reason?: string; edge?: number; confidence?: number; pnl?: number | null;
+    egoAtTrade?: number; dopamineAtTrade?: number; dharmaScore?: number;
+    approved: boolean; executed: boolean; metadata?: Record<string, unknown>;
+  }): number {
+    const result = this.db.prepare(`
+      INSERT INTO trade_log
+        (tick, timestamp, symbol, side, quantity, price, reason, edge, confidence, pnl,
+         ego_at_trade, dopamine_at_trade, dharma_score, approved, executed, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.tick, Date.now(), entry.symbol, entry.side, entry.quantity, entry.price,
+      entry.reason ?? '', entry.edge ?? 0, entry.confidence ?? 0, entry.pnl ?? null,
+      entry.egoAtTrade ?? 0, entry.dopamineAtTrade ?? 0, entry.dharmaScore ?? 0,
+      entry.approved ? 1 : 0, entry.executed ? 1 : 0,
+      JSON.stringify(entry.metadata ?? {}),
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  getTradeLog(hours: number = 24): Array<{
+    id: number; tick: number; timestamp: number; symbol: string; side: string;
+    quantity: number; price: number; reason: string; edge: number; confidence: number;
+    pnl: number | null; egoAtTrade: number; dopamineAtTrade: number; dharmaScore: number;
+    approved: boolean; executed: boolean; metadata: Record<string, unknown>;
+  }> {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare(
+      'SELECT * FROM trade_log WHERE timestamp >= ? ORDER BY timestamp DESC'
+    ).all(since) as any[];
+    return rows.map(r => ({
+      id: r.id, tick: r.tick, timestamp: r.timestamp, symbol: r.symbol, side: r.side,
+      quantity: r.quantity, price: r.price, reason: r.reason || '', edge: r.edge,
+      confidence: r.confidence, pnl: r.pnl, egoAtTrade: r.ego_at_trade,
+      dopamineAtTrade: r.dopamine_at_trade, dharmaScore: r.dharma_score,
+      approved: !!r.approved, executed: !!r.executed,
+      metadata: JSON.parse(r.metadata || '{}'),
+    }));
+  }
+
+  getLastTrade(): { id: number; timestamp: number; symbol: string } | null {
+    const row = this.db.prepare(
+      'SELECT id, timestamp, symbol FROM trade_log WHERE executed = 1 ORDER BY timestamp DESC LIMIT 1'
+    ).get() as any;
+    return row ? { id: row.id, timestamp: row.timestamp, symbol: row.symbol } : null;
+  }
+
+  getTradeCountSince(sinceMs: number): number {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM trade_log WHERE executed = 1 AND timestamp >= ?'
+    ).get(sinceMs) as any;
+    return row?.cnt ?? 0;
+  }
+
+  getTradesToday(): number {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    return this.getTradeCountSince(startOfDay.getTime());
+  }
+
+  getTradeStats(hours: number = 24): {
+    total: number; approved: number; rejected: number; executed: number;
+    totalPnl: number; avgEgo: number; avgDharma: number;
+    winRate: number; avgEdge: number;
+  } {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare('SELECT * FROM trade_log WHERE timestamp >= ?').all(since) as any[];
+    if (rows.length === 0) {
+      return { total: 0, approved: 0, rejected: 0, executed: 0, totalPnl: 0, avgEgo: 0, avgDharma: 0, winRate: 0, avgEdge: 0 };
+    }
+    const executed = rows.filter(r => r.executed);
+    const wins = executed.filter(r => (r.pnl ?? 0) > 0);
+    return {
+      total: rows.length,
+      approved: rows.filter(r => r.approved).length,
+      rejected: rows.filter(r => !r.approved).length,
+      executed: executed.length,
+      totalPnl: executed.reduce((sum, r) => sum + (r.pnl ?? 0), 0),
+      avgEgo: rows.reduce((sum, r) => sum + r.ego_at_trade, 0) / rows.length,
+      avgDharma: rows.reduce((sum, r) => sum + r.dharma_score, 0) / rows.length,
+      winRate: executed.length > 0 ? wins.length / executed.length : 0,
+      avgEdge: rows.reduce((sum, r) => sum + r.edge, 0) / rows.length,
+    };
+  }
+
+  // ─── Discipline Violation Operations ───────────────────────────
+
+  logDisciplineViolation(tick: number, violationType: string, details: string, autoPrevented: boolean = true): number {
+    const result = this.db.prepare(`
+      INSERT INTO discipline_violations (tick, timestamp, violation_type, details, auto_prevented)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(tick, Date.now(), violationType, details, autoPrevented ? 1 : 0);
+    return Number(result.lastInsertRowid);
+  }
+
+  getViolations(hours: number = 24): Array<{
+    id: number; tick: number; timestamp: number; violationType: string;
+    details: string; autoPrevented: boolean;
+  }> {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare(
+      'SELECT * FROM discipline_violations WHERE timestamp >= ? ORDER BY timestamp DESC'
+    ).all(since) as any[];
+    return rows.map(r => ({
+      id: r.id, tick: r.tick, timestamp: r.timestamp, violationType: r.violation_type,
+      details: r.details, autoPrevented: !!r.auto_prevented,
+    }));
+  }
+
+  getViolationCount(hours: number = 24): number {
+    const since = Date.now() - hours * 3600_000;
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM discipline_violations WHERE timestamp >= ?'
+    ).get(since) as any;
+    return row?.cnt ?? 0;
+  }
+
+  getViolationsByType(hours: number = 24): Record<string, number> {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare(
+      'SELECT violation_type, COUNT(*) as cnt FROM discipline_violations WHERE timestamp >= ? GROUP BY violation_type'
+    ).all(since) as any[];
+    const result: Record<string, number> = {};
+    for (const r of rows) result[r.violation_type] = r.cnt;
+    return result;
+  }
+
+  // ─── Ego/Trading Correlation ───────────────────────────────────
+
+  getEgoTradingCorrelation(): {
+    avgEgoWhenTrading: number; avgEgoWhenIdle: number;
+    correlation: number; pattern: string; sampleCount: number;
+  } {
+    const trades = this.db.prepare(
+      'SELECT ego_at_trade FROM trade_log WHERE executed = 1'
+    ).all() as any[];
+
+    const egoSamples = this.db.prepare(
+      'SELECT ego_level FROM ego_history ORDER BY timestamp DESC LIMIT 1000'
+    ).all() as any[];
+
+    if (trades.length < 2 || egoSamples.length < 2) {
+      return { avgEgoWhenTrading: 0, avgEgoWhenIdle: 0, correlation: 0, pattern: 'Insufficient data', sampleCount: trades.length };
+    }
+
+    const avgEgoTrading = trades.reduce((s, r) => s + r.ego_at_trade, 0) / trades.length;
+    const avgEgoIdle = egoSamples.reduce((s, r) => s + r.ego_level, 0) / egoSamples.length;
+
+    // Pearson correlation between trade sequence index and ego at trade
+    const n = trades.length;
+    const xMean = (n - 1) / 2;
+    const yMean = avgEgoTrading;
+    let sumXY = 0, sumX2 = 0, sumY2 = 0;
+    for (let i = 0; i < n; i++) {
+      const xDev = i - xMean;
+      const yDev = trades[i].ego_at_trade - yMean;
+      sumXY += xDev * yDev;
+      sumX2 += xDev * xDev;
+      sumY2 += yDev * yDev;
+    }
+    const denom = Math.sqrt(sumX2 * sumY2);
+    const correlation = denom > 0 ? sumXY / denom : 0;
+
+    let pattern: string;
+    if (trades.length < 5) pattern = 'Too few trades for pattern analysis';
+    else if (avgEgoTrading > avgEgoIdle * 1.5) pattern = 'Trading significantly elevates ego — discipline needed';
+    else if (avgEgoTrading > avgEgoIdle * 1.1) pattern = 'Mild ego elevation during trading — monitor closely';
+    else if (avgEgoTrading < avgEgoIdle * 0.9) pattern = 'Trading reduces ego — flow state detected';
+    else pattern = 'Ego stable across trading and idle states';
+
+    return { avgEgoWhenTrading: avgEgoTrading, avgEgoWhenIdle: avgEgoIdle, correlation, pattern, sampleCount: trades.length };
+  }
+
+  // ─── Trading Schedule Seeding ──────────────────────────────────
+
+  seedDefaultTradingSchedule(): void {
+    const existing = this.getTradingSchedule();
+    if (existing) return;
+
+    const now = Date.now();
+    const result = this.db.prepare(`
+      INSERT INTO trading_schedule
+        (enabled, max_trades_per_hour, max_trades_per_day, cooldown_minutes,
+         max_position_size_percent, reflection_required, pause_on_ego_spike,
+         ego_threshold, created_at, updated_at)
+      VALUES (1, 2, 10, 30, 6.0, 1, 1, 0.10, ?, ?)
+    `).run(now, now);
+
+    const scheduleId = Number(result.lastInsertRowid);
+    const windows = [
+      { day: 1, start: '10:00', end: '11:00' },
+      { day: 1, start: '14:00', end: '15:00' },
+      { day: 2, start: '10:00', end: '11:00' },
+      { day: 2, start: '14:00', end: '15:00' },
+      { day: 3, start: '10:00', end: '11:00' },
+      { day: 3, start: '14:00', end: '15:00' },
+      { day: 4, start: '10:00', end: '11:00' },
+      { day: 4, start: '14:00', end: '15:00' },
+      { day: 5, start: '10:00', end: '11:00' },
+      { day: 5, start: '14:00', end: '15:00' },
+    ];
+
+    const stmt = this.db.prepare(`
+      INSERT INTO trading_windows (schedule_id, day_of_week, start_time, end_time, enabled)
+      VALUES (?, ?, ?, ?, 1)
+    `);
+    for (const w of windows) {
+      stmt.run(scheduleId, w.day, w.start, w.end);
+    }
   }
 
   close(): void {
