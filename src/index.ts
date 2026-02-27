@@ -1479,25 +1479,67 @@ app.post('/v1/trading/log-result', (req, res) => {
 app.get('/v1/trading/risk-config', async (_req, res) => {
   const monitor = consciousness.getTradingMonitor();
   if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
-  const config = await monitor.getRiskConfig();
-  if (!config) return res.status(503).json({ error: 'gateway-trading not reachable' });
-  res.json(config);
+  const result = await monitor.getRiskConfig();
+  if (!result) return res.status(503).json({ error: 'gateway-trading not reachable' });
+  const snapshot = consciousness.getConsciousnessSnapshot();
+  res.json({ ...result, dharmaScore: snapshot.dharmaAlignment });
 });
 
 app.put('/v1/trading/risk-config', async (req, res) => {
   const monitor = consciousness.getTradingMonitor();
   if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
-  const updated = await monitor.setRiskConfig(req.body);
-  if (!updated) return res.status(503).json({ error: 'gateway-trading not reachable' });
-  res.json(updated);
+  const result = await monitor.setRiskConfig(req.body);
+  if (!result) return res.status(503).json({ error: 'gateway-trading not reachable' });
+
+  const snapshot = consciousness.getConsciousnessSnapshot();
+
+  if (Object.keys(result.changed).length > 0) {
+    const changeDescriptions = Object.entries(result.changed)
+      .map(([key, val]) => key + ' ' + val.from + ' -> ' + val.to)
+      .join(', ');
+    const warningStr = result.warnings.length > 0 ? ' ' + result.warnings.join('. ') : '';
+    const significance = result.config.maxPositionSizePercent > 50 ? 0.9 : 0.7;
+    consciousness.logNarrative(
+      'Trading risk config changed: ' + changeDescriptions + '.' + warningStr +
+      ' Ego at ' + (snapshot.egoFormation * 100).toFixed(1) +
+      '%, dharma at ' + (snapshot.dharmaAlignment * 100).toFixed(0) + '%.',
+      significance,
+      ['risk-config-change', 'trading'],
+    );
+  }
+
+  res.json({ ...result, dharmaScore: snapshot.dharmaAlignment });
 });
 
 app.post('/v1/trading/risk-config/reset', async (_req, res) => {
   const monitor = consciousness.getTradingMonitor();
   if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
-  const defaults = await monitor.resetRiskConfig();
-  if (!defaults) return res.status(503).json({ error: 'gateway-trading not reachable' });
-  res.json(defaults);
+  const result = await monitor.resetRiskConfig();
+  if (!result) return res.status(503).json({ error: 'gateway-trading not reachable' });
+
+  consciousness.logNarrative(
+    'Trading risk config reset to defaults. Returning to conservative parameters.',
+    0.6,
+    ['risk-config-reset', 'trading'],
+  );
+
+  const snapshot = consciousness.getConsciousnessSnapshot();
+  res.json({ ...result, dharmaScore: snapshot.dharmaAlignment });
+});
+
+app.get('/v1/trading/risk-config/warnings', async (_req, res) => {
+  const monitor = consciousness.getTradingMonitor();
+  if (!monitor) return res.status(503).json({ error: 'Trading monitor not available' });
+  const result = await monitor.getRiskConfig();
+  if (!result) return res.status(503).json({ error: 'gateway-trading not reachable' });
+  const snapshot = consciousness.getConsciousnessSnapshot();
+  res.json({
+    config: result.config,
+    warnings: result.warnings,
+    dharmaScore: snapshot.dharmaAlignment,
+    egoFormation: snapshot.egoFormation,
+    dopamineLevel: snapshot.dopamineLevel,
+  });
 });
 
 // ─── Consciousness Routes ───────────────────────────────────────────
@@ -1663,9 +1705,10 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/trading/ego-correlation     — Ego/trading analysis');
   console.log('    POST /v1/trading/propose             — Propose + evaluate trade');
   console.log('    POST /v1/trading/log-result          — Log trade PnL result');
-  console.log('    GET  /v1/trading/risk-config         — Current risk parameters');
-  console.log('    PUT  /v1/trading/risk-config         — Update risk parameters');
+  console.log('    GET  /v1/trading/risk-config         — Current risk config + warnings');
+  console.log('    PUT  /v1/trading/risk-config         — Update config (no hard limits)');
   console.log('    POST /v1/trading/risk-config/reset   — Reset to defaults');
+  console.log('    GET  /v1/trading/risk-config/warnings — Risk assessment + dharma');
   console.log('');
   console.log('    GET  /v1/admin/safety/alerts        — Safety alerts');
   console.log('');

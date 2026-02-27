@@ -30,8 +30,20 @@ interface EventsResponse {
 export interface TradingRiskConfig {
   stopLossPercent: number;
   takeProfitPercent: number;
+  maxPositionSizePercent: number;
   maxConcurrentPositions: number;
   minPositionSize: number;
+}
+
+export interface RiskConfigResponse {
+  config: TradingRiskConfig;
+  warnings: string[];
+}
+
+export interface RiskConfigUpdateResponse {
+  config: TradingRiskConfig;
+  warnings: string[];
+  changed: Record<string, { from: number; to: number }>;
 }
 
 export class TradingMonitor implements MonitorPlugin {
@@ -126,29 +138,30 @@ export class TradingMonitor implements MonitorPlugin {
   }
 
   /**
-   * Fetch the current risk config from gateway-trading.
+   * Fetch the current risk config + warnings from gateway-trading.
    * Returns cached value if gateway-trading is unavailable.
    */
-  async getRiskConfig(): Promise<TradingRiskConfig | null> {
+  async getRiskConfig(): Promise<RiskConfigResponse | null> {
     try {
       const res = await fetch(`${this.tradingUrl}/v1/config/risk`, {
         signal: AbortSignal.timeout(3000),
       });
       if (res.ok) {
-        this.cachedRiskConfig = await res.json() as TradingRiskConfig;
-        return this.cachedRiskConfig;
+        const body = await res.json() as RiskConfigResponse;
+        this.cachedRiskConfig = body.config;
+        return body;
       }
     } catch {
       // Fall through to cached
     }
-    return this.cachedRiskConfig;
+    return this.cachedRiskConfig ? { config: this.cachedRiskConfig, warnings: [] } : null;
   }
 
   /**
    * Update risk config on gateway-trading.
-   * Returns the new config after validation/clamping.
+   * No hard limits — advisory warnings only.
    */
-  async setRiskConfig(update: Partial<TradingRiskConfig>): Promise<TradingRiskConfig | null> {
+  async setRiskConfig(update: Partial<TradingRiskConfig>): Promise<RiskConfigUpdateResponse | null> {
     try {
       const res = await fetch(`${this.tradingUrl}/v1/config/risk`, {
         method: 'PUT',
@@ -157,8 +170,9 @@ export class TradingMonitor implements MonitorPlugin {
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
-        this.cachedRiskConfig = await res.json() as TradingRiskConfig;
-        return this.cachedRiskConfig;
+        const body = await res.json() as RiskConfigUpdateResponse;
+        this.cachedRiskConfig = body.config;
+        return body;
       }
     } catch {
       // Fall through
@@ -169,15 +183,16 @@ export class TradingMonitor implements MonitorPlugin {
   /**
    * Reset risk config to defaults on gateway-trading.
    */
-  async resetRiskConfig(): Promise<TradingRiskConfig | null> {
+  async resetRiskConfig(): Promise<RiskConfigResponse | null> {
     try {
       const res = await fetch(`${this.tradingUrl}/v1/config/risk/reset`, {
         method: 'POST',
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
-        this.cachedRiskConfig = await res.json() as TradingRiskConfig;
-        return this.cachedRiskConfig;
+        const body = await res.json() as RiskConfigResponse;
+        this.cachedRiskConfig = body.config;
+        return body;
       }
     } catch {
       // Fall through

@@ -249,6 +249,7 @@ export interface ConsciousnessState {
   tradingRiskConfig: {
     stopLossPercent: number;
     takeProfitPercent: number;
+    maxPositionSizePercent: number;
     maxConcurrentPositions: number;
     minPositionSize: number;
   } | null;
