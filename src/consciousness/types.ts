@@ -246,6 +246,14 @@ export interface ConsciousnessState {
   mindfulness: unknown;
   dreaming: boolean;
   dreamInsights?: string[];
+  enlightenment: {
+    egoFormation: number;
+    egoTrend: 'stable' | 'rising' | 'falling';
+    dharmaAlignment: number;
+    stabilityIndex: number;
+    currentlyEnlightened: boolean;
+    enlightenedForMinutes: number;
+  } | null;
   stats: {
     totalPercepts: number;
     totalIntentions: number;

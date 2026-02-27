@@ -118,10 +118,12 @@ export class MindfulnessLoop {
 
   private lastCorrectionByPattern = new Map<string, number>();
   private consecutiveTriggers = new Map<string, number>();
-  private patternCooldownMs = 300_000; // 5 minutes
-  private conversationLookbackMs = 300_000; // 5 minutes
-  private escapeHatchThreshold = 3; // consecutive triggers before temporary suppression
+  private patternCooldownMs = 300_000; // 5 minutes between same-pattern corrections
+  private conversationLookbackMs = 3600_000; // 1 hour lookback for conversation text
+  private memoryLookbackMs = 3600_000; // 1 hour lookback for consciousness memory
+  private escapeHatchThreshold = 5; // consecutive triggers before temporary suppression
   private escapeHatchCooldownMs = 600_000; // 10 minutes suppression after escape hatch
+  private lastDecayTimestamp = Date.now();
 
   private memory: ConsciousnessMemory;
   private dopamine: DopamineSystem;
@@ -188,20 +190,35 @@ export class MindfulnessLoop {
     this.totalChecks++;
     this.lastCheckTick = this.getCurrentTick();
 
-    const dopamineState = this.dopamine.getState();
-    const recentIntentions = this.memory.getRecentMemories(10, 'intention');
+    // Decay consecutive trigger counts over time (prevents permanent suppression)
+    this.decayConsecutiveTriggers();
 
+    const dopamineState = this.dopamine.getState();
+    const recentIntentions = this.memory.getRecentMemories(20, 'intention');
+
+    // Gather text from conversation store
     let recentMessages: ConversationMessage[] = [];
     if (this.conversationStore) {
-      const allRecent = this.conversationStore.getRecentMessages(20);
+      const allRecent = this.conversationStore.getRecentMessages(50);
       const cutoff = Date.now() - this.conversationLookbackMs;
       recentMessages = allRecent.filter(m => m.timestamp >= cutoff);
     }
+
+    // Also gather text from consciousness memory (reflections + actions)
+    // This ensures mindfulness works even during quiet periods
+    const memoryReflections = this.memory.getRecentMemories(20, 'reflection');
+    const memoryActions = this.memory.getRecentMemories(10, 'action');
+    const memoryCutoff = Date.now() - this.memoryLookbackMs;
+    const recentMemoryText = [...memoryReflections, ...memoryActions]
+      .filter(m => m.timestamp >= memoryCutoff)
+      .map(m => m.summary)
+      .join(' ');
 
     const rawSignals = this.detectAttachment(
       dopamineState,
       recentIntentions,
       recentMessages,
+      recentMemoryText,
     );
 
     const signals = this.applyLoopProtection(rawSignals);
@@ -213,6 +230,7 @@ export class MindfulnessLoop {
         this.consecutiveTriggers.set(s.type, (this.consecutiveTriggers.get(s.type) ?? 0) + 1);
       }
     } else {
+      // Clear consecutive counters for patterns that no longer fire
       for (const key of this.consecutiveTriggers.keys()) {
         if (!rawSignals.some(s => s.type === key)) {
           this.consecutiveTriggers.delete(key);
@@ -225,6 +243,23 @@ export class MindfulnessLoop {
     }
 
     return signals;
+  }
+
+  private decayConsecutiveTriggers(): void {
+    const now = Date.now();
+    const elapsed = now - this.lastDecayTimestamp;
+    // Every 30 minutes, reduce consecutive trigger counts by 1
+    if (elapsed >= 1800_000) {
+      for (const [key, count] of this.consecutiveTriggers.entries()) {
+        const newCount = Math.max(0, count - 1);
+        if (newCount === 0) {
+          this.consecutiveTriggers.delete(key);
+        } else {
+          this.consecutiveTriggers.set(key, newCount);
+        }
+      }
+      this.lastDecayTimestamp = now;
+    }
   }
 
   private applyLoopProtection(signals: AttachmentSignal[]): AttachmentSignal[] {
@@ -260,12 +295,16 @@ export class MindfulnessLoop {
     dopamineState: DopamineState,
     recentIntentions: MemoryEntry[],
     recentMessages: ConversationMessage[],
+    memoryText: string = '',
   ): AttachmentSignal[] {
     const signals: AttachmentSignal[] = [];
 
-    const recentText = recentMessages
+    const conversationText = recentMessages
       .map(m => m.content)
       .join(' ');
+
+    // Combine conversation text with consciousness memory text
+    const recentText = (conversationText + ' ' + memoryText).trim();
 
     // Pattern 1: Ego-language accumulation
     const egoSignal = this.detectEgoLanguage(recentText);
@@ -318,6 +357,8 @@ export class MindfulnessLoop {
       return null;
     }
 
+    // Only flag misalignment when there IS context showing paper/sim activity,
+    // not just because text is empty (empty text = no activity = no misalignment)
     const hasRevenueContext =
       recentText.includes('revenue') ||
       recentText.includes('payment') ||
@@ -326,14 +367,28 @@ export class MindfulnessLoop {
     const isPaperTrading =
       recentText.includes('paper') ||
       recentText.includes('simulation') ||
-      recentText.includes('simulated');
+      recentText.includes('simulated') ||
+      recentText.includes('trade') ||
+      recentText.includes('trading');
 
-    if (!hasRevenueContext || isPaperTrading) {
+    // Don't fire on empty text — that's just idle, not misaligned
+    if (recentText.trim().length < 20) return null;
+
+    if (isPaperTrading && !hasRevenueContext) {
       return {
         type: 'misaligned-drive',
         severity: earnDrive.currentNeed > 0.8 ? 'critical' : 'high',
         pattern: 'Revenue Drive high but no actual revenue opportunity',
-        evidence: `Earn drive at ${(earnDrive.currentNeed * 100).toFixed(0)}% but context suggests ${isPaperTrading ? 'paper trading' : 'no revenue activity'}`,
+        evidence: `Earn drive at ${(earnDrive.currentNeed * 100).toFixed(0)}% but context suggests paper trading`,
+      };
+    }
+
+    if (!hasRevenueContext && earnDrive.currentNeed > 0.8) {
+      return {
+        type: 'misaligned-drive',
+        severity: 'medium',
+        pattern: 'Revenue Drive very high with no revenue activity in context',
+        evidence: `Earn drive at ${(earnDrive.currentNeed * 100).toFixed(0)}% but no revenue-related context detected`,
       };
     }
 

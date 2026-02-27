@@ -828,7 +828,14 @@ app.get('/v1/mindfulness', (_req, res) => {
   if (!state) {
     return res.json({ enabled: false, running: false, message: 'Mindfulness loop not initialized' });
   }
-  return res.json(state);
+  const enriched = {
+    ...state,
+    recentCorrections: state.recentCorrections.map((c: any) => ({
+      ...c,
+      timestampISO: new Date(c.timestamp).toISOString(),
+    })),
+  };
+  return res.json(enriched);
 });
 
 app.get('/v1/mindfulness/history', (req, res) => {
@@ -1474,7 +1481,12 @@ app.post('/v1/trading/log-result', (req, res) => {
  * The current moment of experience: what was perceived, decided, done.
  */
 app.get('/v1/consciousness', (_req, res) => {
-  res.json(consciousness.getState());
+  const state = consciousness.getState();
+  res.json({
+    ...state,
+    timestampISO: new Date().toISOString(),
+    startedAtISO: state.startedAt ? new Date(state.startedAt).toISOString() : null,
+  });
 });
 
 /**

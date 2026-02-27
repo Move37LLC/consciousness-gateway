@@ -460,6 +460,15 @@ export class ConsciousnessLoop {
       mindfulness: this.mindfulness?.getState() ?? null,
       dreaming: this.dreamCycle?.isDreaming() ?? false,
       dreamInsights: this.dreamCycle?.getState()?.insights,
+      enlightenment: {
+        egoFormation: this.currentEgoLevel,
+        egoTrend: this.egoTrend,
+        dharmaAlignment: this.dharmaAlignment,
+        stabilityIndex: this.stabilityIndex,
+        currentlyEnlightened: this.egoAtZeroSince !== null,
+        enlightenedForMinutes: this.egoAtZeroSince
+          ? (Date.now() - this.egoAtZeroSince) / 60_000 : 0,
+      },
       stats: {
         totalPercepts: this.totalPercepts,
         totalIntentions: this.totalIntentions,
