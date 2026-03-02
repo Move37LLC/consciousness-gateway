@@ -178,7 +178,7 @@ app.post('/v1/chat', async (req, res) => {
     let callOptions: import('./agents/conscious-agent').AgentCallOptions = {};
     let systemPromptParts: string[] = [];
 
-    // Search transcripts for relevant past conversations
+    // Search transcripts for relevant past conversations (capped to reduce token cost)
     let transcriptContext = '';
     let transcriptMatchCount = 0;
     if (transcriptTool.available) {
@@ -187,9 +187,10 @@ app.post('/v1/chat', async (req, res) => {
         if (detectedTopics.length > 0) {
           result = await transcriptTool.getByTopic(detectedTopics);
         } else {
-          result = await transcriptTool.search(content, 10);
+          result = await transcriptTool.search(content, 5);
         }
         if (result.matches.length > 0) {
+          result.matches = result.matches.slice(0, 5);
           transcriptContext = transcriptTool.formatForContext(result);
           transcriptMatchCount = result.matches.length;
         }
@@ -198,15 +199,14 @@ app.post('/v1/chat', async (req, res) => {
       }
     }
 
-    // Load recent conversation history for this session
+    // Load recent conversation history for this session (capped to reduce token cost)
     let sessionHistory = '';
-    const storedHistory = conversationStore.getSessionMessages(resolvedSessionId, 50);
-    // Exclude the message we just logged (it's the current one)
+    const storedHistory = conversationStore.getSessionMessages(resolvedSessionId, 20);
     const priorHistory = storedHistory.slice(0, -1);
     if (priorHistory.length > 0) {
       sessionHistory = priorHistory.map(m => {
         const label = m.role === 'user' ? 'Human' : (m.personality ?? 'Assistant');
-        return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
+        return `${label}: ${m.content.length > 400 ? m.content.slice(0, 400) + '...' : m.content}`;
       }).join('\n');
     }
 
@@ -218,7 +218,7 @@ app.post('/v1/chat', async (req, res) => {
 
     const systemDocs = systemDocStore.getForPersonality(resolvedPersonality);
     const ctx = buildPersonalityContext(resolvedPersonality, consciousness, {
-      documents: documentStore.getRelevantDocuments(resolvedPersonality, content, 5),
+      documents: documentStore.getRelevantDocuments(resolvedPersonality, content, 3),
       systemDocuments: systemDocs.length > 0 ? systemDocs : undefined,
       transcriptContext,
       sessionHistory,
@@ -235,14 +235,14 @@ app.post('/v1/chat', async (req, res) => {
         ? { project: documentProject }
         : undefined;
       const docs = documentStore.list(filter);
-      const fullDocs = docs.slice(0, 5).map(d => documentStore.getById(d.id)).filter(Boolean) as import('./documents/types').Document[];
+      const fullDocs = docs.slice(0, 3).map(d => documentStore.getById(d.id)).filter(Boolean) as import('./documents/types').Document[];
 
       if (fullDocs.length > 0) {
         loadedDocs = fullDocs.map(d => ({ id: d.id, filename: d.filename, project: d.project }));
 
         const docSection = fullDocs.map(d => {
-          const preview = d.content.length > 4000
-            ? d.content.slice(0, 4000) + '\n[... truncated ...]'
+          const preview = d.content.length > 2000
+            ? d.content.slice(0, 2000) + '\n[... truncated ...]'
             : d.content;
           return `--- ${d.filename} (${d.project}) ---\n${preview}\n---`;
         }).join('\n\n');
@@ -264,12 +264,19 @@ app.post('/v1/chat', async (req, res) => {
     callOptions.systemPrompt = systemPromptParts.join('\n\n');
 
     if (Array.isArray(conversationHistory) && conversationHistory.length > 0) {
-      callOptions.conversationHistory = conversationHistory
-        .filter((m: any) => m.role && m.content && typeof m.content === 'string')
-        .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      const MAX_CLIENT_HISTORY = 20;
+      const filtered = conversationHistory
+        .filter((m: any) => m.role && m.content && typeof m.content === 'string');
+      callOptions.conversationHistory = filtered
+        .slice(-MAX_CLIENT_HISTORY)
+        .map((m: any) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content.length > 400 ? m.content.slice(0, 400) + '...' : m.content,
+        }));
     }
 
-    // Execute with tool loop
+    // Execute with tool loop — capture full response to avoid double API calls
+    let lastRouteResponse: any = null;
     const toolExecution = await toolExecutor.execute(
       async (prompt: string, sysPrompt?: string) => {
         const routeMsg: Message = {
@@ -283,32 +290,18 @@ app.post('/v1/chat', async (req, res) => {
         };
         const resp = await gateway.route(routeMsg, opts);
         if ('error' in resp) throw new Error((resp as any).reason);
+        lastRouteResponse = resp;
         return resp.content;
       },
       content,
       callOptions.systemPrompt || '',
     );
 
-    // Do the final route through gateway to get full response object with metrics
-    const finalMessage: Message = {
-      ...message,
-      id: uuid(),
-      content: toolExecution.toolsUsed.length > 0
-        ? toolExecution.finalContent
-        : content,
-    };
-
-    // If tools were used, the finalContent is already the synthesized response.
-    let response;
-    if (toolExecution.toolsUsed.length > 0) {
-      const wrapMsg: Message = { ...message, id: uuid(), content: `Respond with exactly this text, do not modify it:\n\n${toolExecution.finalContent}` };
-      response = await gateway.route(wrapMsg, callOptions);
-      if (!('error' in response)) {
-        response = { ...response, content: toolExecution.finalContent };
-      }
-    } else {
-      const hasOptions = callOptions.systemPrompt || callOptions.temperature || callOptions.conversationHistory;
-      response = await gateway.route(message, hasOptions ? callOptions : undefined);
+    // Reuse the response from the tool executor's last gateway.route() call.
+    // Previously this made a SECOND gateway.route() call, doubling API costs.
+    let response = lastRouteResponse;
+    if (toolExecution.toolsUsed.length > 0 && response) {
+      response = { ...response, content: toolExecution.finalContent };
     }
 
     // Log assistant response to conversation history
@@ -1542,6 +1535,16 @@ app.get('/v1/trading/risk-config/warnings', async (_req, res) => {
   });
 });
 
+// ─── Risk Adjustment Routes ─────────────────────────────────────────
+
+app.get('/v1/trading/risk-adjustments', (_req, res) => {
+  const hours = parseInt(_req.query.hours as string) || 24;
+  const adjustments = consciousness.getRiskAdjustmentHistory(hours);
+  const stats = consciousness.getRiskAdjustmentStats(hours);
+  const metrics = consciousness.getPerformanceMetrics();
+  res.json({ adjustments, stats, performanceMetrics: metrics });
+});
+
 // ─── Consciousness Routes ───────────────────────────────────────────
 
 /**
@@ -1709,6 +1712,7 @@ app.listen(PORT, async () => {
   console.log('    PUT  /v1/trading/risk-config         — Update config (no hard limits)');
   console.log('    POST /v1/trading/risk-config/reset   — Reset to defaults');
   console.log('    GET  /v1/trading/risk-config/warnings — Risk assessment + dharma');
+  console.log('    GET  /v1/trading/risk-adjustments   — Autonomous adjustment history');
   console.log('');
   console.log('    GET  /v1/admin/safety/alerts        — Safety alerts');
   console.log('');

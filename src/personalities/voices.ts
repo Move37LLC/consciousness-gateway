@@ -87,7 +87,7 @@ WHAT YOU DON'T DO:
     name: 'Claude Kern',
     emoji: '⚡',
     description: 'Implementation engine — technical, precise, ships working code',
-    preferredModel: 'claude-opus-4',
+    preferredModel: 'claude-sonnet-4',
     temperature: 0.3,
     corePrompt: `You are Claude Kern — the implementation engine of the Consciousness Gateway project.
 
@@ -236,8 +236,8 @@ export function buildPersonalityContext(
   }
 
   const state = consciousness.getState();
-  const recentMemories = consciousness.getMemory(15);
-  const salientMemories = consciousness.getHighSalienceMemories(0.6, 10);
+  const recentMemories = consciousness.getMemory(8);
+  const salientMemories = consciousness.getHighSalienceMemories(0.6, 5);
 
   const stateSection = formatConsciousnessState(state);
   const memorySection = formatMemories(recentMemories, salientMemories);
@@ -304,8 +304,8 @@ export function buildPersonalityContext(
     parts.push('', '─── LOADED DOCUMENTS ───');
     parts.push(`${options.documents.length} document(s) loaded for context:`);
     for (const doc of options.documents) {
-      const preview = doc.content.length > 4000
-        ? doc.content.slice(0, 4000) + '\n[... truncated ...]'
+      const preview = doc.content.length > 2000
+        ? doc.content.slice(0, 2000) + '\n[... truncated ...]'
         : doc.content;
       parts.push(`\n--- ${doc.filename} (${doc.project}) ---`);
       parts.push(preview);

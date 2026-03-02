@@ -252,6 +252,24 @@ export class ConsciousnessMemory {
 
       CREATE INDEX IF NOT EXISTS idx_discipline_violations_timestamp ON discipline_violations(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_discipline_violations_type ON discipline_violations(violation_type);
+
+      CREATE TABLE IF NOT EXISTS risk_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tick INTEGER NOT NULL,
+        timestamp INTEGER NOT NULL,
+        parameter TEXT NOT NULL,
+        old_value REAL NOT NULL,
+        new_value REAL NOT NULL,
+        reasoning TEXT NOT NULL,
+        trigger_pattern TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        dharma_score REAL NOT NULL,
+        approved INTEGER NOT NULL,
+        executed INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_risk_adjustments_timestamp ON risk_adjustments(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_risk_adjustments_parameter ON risk_adjustments(parameter);
     `);
   }
 
@@ -1444,6 +1462,70 @@ export class ConsciousnessMemory {
     const result: Record<string, number> = {};
     for (const r of rows) result[r.violation_type] = r.cnt;
     return result;
+  }
+
+  // ─── Risk Adjustment Operations ─────────────────────────────────
+
+  logRiskAdjustment(entry: {
+    tick: number; parameter: string; oldValue: number; newValue: number;
+    reasoning: string; triggerPattern: string; confidence: number;
+    dharmaScore: number; approved: boolean; executed: boolean;
+  }): number {
+    const result = this.db.prepare(`
+      INSERT INTO risk_adjustments
+        (tick, timestamp, parameter, old_value, new_value, reasoning,
+         trigger_pattern, confidence, dharma_score, approved, executed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.tick, Date.now(), entry.parameter, entry.oldValue, entry.newValue,
+      entry.reasoning, entry.triggerPattern, entry.confidence,
+      entry.dharmaScore, entry.approved ? 1 : 0, entry.executed ? 1 : 0,
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  getRiskAdjustments(hours: number = 24): Array<{
+    id: number; tick: number; timestamp: number; parameter: string;
+    oldValue: number; newValue: number; reasoning: string;
+    triggerPattern: string; confidence: number; dharmaScore: number;
+    approved: boolean; executed: boolean;
+  }> {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare(
+      'SELECT * FROM risk_adjustments WHERE timestamp >= ? ORDER BY timestamp DESC'
+    ).all(since) as any[];
+    return rows.map(r => ({
+      id: r.id, tick: r.tick, timestamp: r.timestamp, parameter: r.parameter,
+      oldValue: r.old_value, newValue: r.new_value, reasoning: r.reasoning,
+      triggerPattern: r.trigger_pattern, confidence: r.confidence,
+      dharmaScore: r.dharma_score, approved: !!r.approved, executed: !!r.executed,
+    }));
+  }
+
+  getRiskAdjustmentStats(hours: number = 24): {
+    total: number; approved: number; rejected: number; executed: number;
+    byParameter: Record<string, number>; byPattern: Record<string, number>;
+  } {
+    const since = Date.now() - hours * 3600_000;
+    const rows = this.db.prepare(
+      'SELECT * FROM risk_adjustments WHERE timestamp >= ?'
+    ).all(since) as any[];
+
+    const byParameter: Record<string, number> = {};
+    const byPattern: Record<string, number> = {};
+    for (const r of rows) {
+      byParameter[r.parameter] = (byParameter[r.parameter] ?? 0) + 1;
+      byPattern[r.trigger_pattern] = (byPattern[r.trigger_pattern] ?? 0) + 1;
+    }
+
+    return {
+      total: rows.length,
+      approved: rows.filter(r => r.approved).length,
+      rejected: rows.filter(r => !r.approved).length,
+      executed: rows.filter(r => r.executed).length,
+      byParameter,
+      byPattern,
+    };
   }
 
   // ─── Ego/Trading Correlation ───────────────────────────────────

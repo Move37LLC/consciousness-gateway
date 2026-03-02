@@ -60,8 +60,8 @@ export class ContextBuilder {
     options: ContextBuildOptions,
   ): Promise<BuiltContext> {
     const topics = detectTopics(message);
-    const maxTranscripts = options.maxTranscriptMatches ?? 15;
-    const maxHistory = options.maxHistoryMessages ?? 50;
+    const maxTranscripts = options.maxTranscriptMatches ?? 5;
+    const maxHistory = options.maxHistoryMessages ?? 20;
 
     // Search transcripts for relevant past conversations
     let transcriptSection = '';

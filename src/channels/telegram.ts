@@ -465,28 +465,29 @@ export class TelegramChannel {
       topicTags: detectedTopics,
     });
 
-    // Search transcripts for relevant context
+    // Search transcripts for relevant context (capped to reduce token cost)
     let transcriptContext: string | undefined;
     if (this.transcriptTool.available) {
       try {
         const result = detectedTopics.length > 0
           ? await this.transcriptTool.getByTopic(detectedTopics)
-          : await this.transcriptTool.search(text, 10);
+          : await this.transcriptTool.search(text, 5);
         if (result.matches.length > 0) {
+          result.matches = result.matches.slice(0, 5);
           transcriptContext = this.transcriptTool.formatForContext(result);
         }
       } catch { /* skip */ }
     }
 
-    // Load session history
+    // Load session history (capped to reduce token cost)
     let sessionHistory: string | undefined;
     if (this.conversations) {
-      const stored = this.conversations.getSessionMessages(this.telegramSessionId, 50);
+      const stored = this.conversations.getSessionMessages(this.telegramSessionId, 20);
       const prior = stored.slice(0, -1);
       if (prior.length > 0) {
         sessionHistory = prior.map(m => {
           const label = m.role === 'user' ? 'Human' : 'Assistant';
-          return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
+          return `${label}: ${m.content.length > 400 ? m.content.slice(0, 400) + '...' : m.content}`;
         }).join('\n');
       }
     }
@@ -516,31 +517,25 @@ export class TelegramChannel {
       timestamp: Date.now(),
     };
 
-    // Run through tool executor loop
+    // Run through tool executor loop — capture response to avoid double API calls
+    let lastRouteResponse: any = null;
     const toolResult = await this.toolExecutor.execute(
       async (prompt: string, sysPrompt?: string) => {
         const routeMsg: Message = { ...message, id: uuid(), content: prompt };
         const resp = await this.gateway.route(routeMsg, { systemPrompt: sysPrompt || systemPrompt });
         if ('error' in resp) throw new Error((resp as any).reason);
+        lastRouteResponse = resp;
         return resp.content;
       },
       text,
       systemPrompt,
     );
 
-    const finalContent = toolResult.toolsUsed.length > 0 ? toolResult.finalContent : text;
-    const routeMessage: Message = { ...message, id: uuid(), content: finalContent };
-    const response = await this.gateway.route(routeMessage, { systemPrompt });
-
-    if ('error' in response) {
-      await this.bot.sendMessage(chatId, `❌ Error: ${(response as any).reason}`);
+    const response = lastRouteResponse;
+    if (!response || 'error' in response) {
+      await this.bot.sendMessage(chatId, `❌ Error: ${response ? (response as any).reason : 'No response'}`);
     } else {
-      let reply = response.content;
-
-      // Use final tool content if tools were used
-      if (toolResult.toolsUsed.length > 0) {
-        reply = toolResult.finalContent;
-      }
+      let reply = toolResult.toolsUsed.length > 0 ? toolResult.finalContent : response.content;
 
       // Log assistant response
       this.conversations?.logMessage({
@@ -588,28 +583,29 @@ export class TelegramChannel {
       topicTags: detectedTopics,
     });
 
-    // Search transcripts for relevant past conversations
+    // Search transcripts for relevant past conversations (capped to reduce token cost)
     let transcriptContext: string | undefined;
     if (this.transcriptTool.available) {
       try {
         const result = detectedTopics.length > 0
           ? await this.transcriptTool.getByTopic(detectedTopics)
-          : await this.transcriptTool.search(text, 10);
+          : await this.transcriptTool.search(text, 5);
         if (result.matches.length > 0) {
+          result.matches = result.matches.slice(0, 5);
           transcriptContext = this.transcriptTool.formatForContext(result);
         }
       } catch { /* skip */ }
     }
 
-    // Load session history for personality context
+    // Load session history for personality context (capped to reduce token cost)
     let sessionHistory: string | undefined;
     if (this.conversations) {
-      const stored = this.conversations.getSessionMessages(this.telegramSessionId, 50);
+      const stored = this.conversations.getSessionMessages(this.telegramSessionId, 20);
       const prior = stored.slice(0, -1);
       if (prior.length > 0) {
         sessionHistory = prior.map(m => {
           const label = m.role === 'user' ? 'Human' : (m.personality ?? 'Assistant');
-          return `${label}: ${m.content.length > 800 ? m.content.slice(0, 800) + '...' : m.content}`;
+          return `${label}: ${m.content.length > 400 ? m.content.slice(0, 400) + '...' : m.content}`;
         }).join('\n');
       }
     }
@@ -628,10 +624,11 @@ export class TelegramChannel {
     const toolPrompt = this.toolExecutor.getToolSystemPrompt();
     const systemPrompt = toolPrompt ? ctx.systemPrompt + '\n\n' + toolPrompt : ctx.systemPrompt;
 
-    // Run through tool executor loop
+    // Run through tool executor loop — capture response to avoid double API calls
+    let lastRouteResponse: any = null;
     const toolResult = await this.toolExecutor.execute(
       async (prompt: string, sysPrompt?: string) => {
-        const message: Message = {
+        const routeMessage: Message = {
           id: uuid(),
           content: prompt,
           sender: { id: this.config.chatId, role: 'admin' },
@@ -639,11 +636,12 @@ export class TelegramChannel {
           timestamp: Date.now(),
           metadata: { personality: resolvedVoiceId },
         };
-        const resp = await this.gateway.route(message, {
+        const resp = await this.gateway.route(routeMessage, {
           systemPrompt: sysPrompt || systemPrompt,
           temperature: ctx.temperature,
         });
         if ('error' in resp) throw new Error((resp as any).reason);
+        lastRouteResponse = resp;
         return resp.content;
       },
       text,
@@ -658,18 +656,20 @@ export class TelegramChannel {
       await this.bot.sendMessage(chatId, toolSummary);
     }
 
+    const reply_content = toolResult.toolsUsed.length > 0 ? toolResult.finalContent : (lastRouteResponse?.content ?? '');
+
     // Log assistant response
     this.conversations?.logMessage({
       sessionId: this.telegramSessionId,
       channel: 'telegram',
       role: 'assistant',
-      content: toolResult.finalContent,
+      content: reply_content,
       personality: resolvedVoiceId,
       topicTags: detectedTopics,
       metadata: { toolsUsed: toolResult.toolsUsed.map(t => t.type) },
     });
 
-    let reply = `${voice.emoji} *${voice.name}*\n\n${toolResult.finalContent}`;
+    let reply = `${voice.emoji} *${voice.name}*\n\n${reply_content}`;
 
     const toolCount = toolResult.toolsUsed.length;
     reply += `\n\n_${voice.emoji} ${voice.name}${toolCount > 0 ? ` | ${toolCount} tool(s)` : ''}_`;

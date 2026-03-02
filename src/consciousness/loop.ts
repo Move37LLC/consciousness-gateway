@@ -34,6 +34,8 @@ import { ConversationStore } from '../memory/conversation-store';
 import { RewardType } from './types';
 import { DreamCycle, DreamState } from './dream';
 import { EntropyCartographer } from './entropy-map';
+import { PerformanceMonitor } from '../trading/performance-monitor';
+import { RiskIntentionEngine } from '../trading/risk-intentions';
 
 export class ConsciousnessLoop {
   private config: ConsciousnessConfig;
@@ -84,6 +86,10 @@ export class ConsciousnessLoop {
   // Entropy cartography
   private entropyCartographer: EntropyCartographer | null = null;
 
+  // Autonomous risk management
+  private performanceMonitor: PerformanceMonitor;
+  private riskIntentionEngine: RiskIntentionEngine;
+
   // Narrative auto-generation state
   private previousPhase: string = '';
   private previousDharmaAlignment = 0;
@@ -120,6 +126,10 @@ export class ConsciousnessLoop {
     // Initialize dream cycle and entropy cartography
     this.dreamCycle = new DreamCycle(this.memory);
     this.entropyCartographer = new EntropyCartographer(this.memory);
+
+    // Initialize autonomous risk management
+    this.performanceMonitor = new PerformanceMonitor(this.memory);
+    this.riskIntentionEngine = new RiskIntentionEngine(this.memory);
 
     // Initialize monitors
     this.monitors.push(
@@ -421,6 +431,16 @@ export class ConsciousnessLoop {
 
     if (this.tick % 10 === 0) {
       this.checkSafety();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 7.5: AUTONOMOUS RISK MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════
+
+    if (this.tick % 100 === 0) {
+      this.evaluateRiskAdjustments().catch(err => {
+        console.error('  [consciousness] Risk evaluation error:', err);
+      });
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -734,6 +754,111 @@ export class ConsciousnessLoop {
         this.safetyAlertCooldowns.set(key, now);
       }
     }
+  }
+
+  // ─── Autonomous Risk Management ─────────────────────────────────
+
+  private async evaluateRiskAdjustments(): Promise<void> {
+    const tradingMonitor = this.getTradingMonitor();
+    if (!tradingMonitor) return;
+
+    const riskConfigResp = await tradingMonitor.getRiskConfig();
+    if (!riskConfigResp) return;
+    const currentConfig = riskConfigResp.config;
+
+    const metrics = this.performanceMonitor.analyze();
+    if (metrics.totalTrades < 5) return;
+
+    const patterns = this.performanceMonitor.detectPatterns(metrics);
+    if (patterns.length === 0) return;
+
+    const intentions = this.riskIntentionEngine.formIntentions(metrics, patterns, currentConfig);
+    if (intentions.length === 0) return;
+
+    for (const intention of intentions) {
+      const dharmaCheck = this.riskIntentionEngine.evaluateDharma(intention, this.currentEgoLevel);
+
+      this.memory.logRiskAdjustment({
+        tick: this.tick,
+        parameter: intention.parameter,
+        oldValue: intention.currentValue,
+        newValue: intention.proposedValue,
+        reasoning: intention.reasoning,
+        triggerPattern: intention.triggerPattern,
+        confidence: intention.confidence,
+        dharmaScore: dharmaCheck.dharmaScore,
+        approved: dharmaCheck.approved,
+        executed: false,
+      });
+
+      if (dharmaCheck.approved) {
+        const result = await tradingMonitor.setRiskConfig({
+          [intention.parameter]: intention.proposedValue,
+        });
+
+        const executed = result !== null;
+        if (executed) {
+          this.riskIntentionEngine.recordAdjustment(intention.parameter);
+
+          // Update the record to mark as executed
+          this.memory.logRiskAdjustment({
+            tick: this.tick,
+            parameter: intention.parameter,
+            oldValue: intention.currentValue,
+            newValue: intention.proposedValue,
+            reasoning: intention.reasoning,
+            triggerPattern: intention.triggerPattern,
+            confidence: intention.confidence,
+            dharmaScore: dharmaCheck.dharmaScore,
+            approved: true,
+            executed: true,
+          });
+        }
+
+        this.memory.storeNarrative({
+          tick: this.tick,
+          phase: this.lastPercept?.temporal?.phase || 'unknown',
+          arousal: this.lastPercept?.fused?.arousal || 0,
+          content: `Risk adjustment ${executed ? 'executed' : 'failed'}: ${intention.parameter} ` +
+            `${intention.currentValue} → ${intention.proposedValue}. ${intention.reasoning}. ` +
+            `Dharma: ${dharmaCheck.dharmaScore.toFixed(2)}.`,
+          significance: 0.85,
+          tags: ['risk-adjustment', intention.triggerPattern, executed ? 'executed' : 'failed'],
+        });
+
+        console.log(
+          `  [risk] ${executed ? 'Adjusted' : 'FAILED'}: ${intention.parameter} ` +
+          `${intention.currentValue} → ${intention.proposedValue} ` +
+          `(dharma=${dharmaCheck.dharmaScore.toFixed(2)}, pattern=${intention.triggerPattern})`
+        );
+      } else {
+        this.memory.storeNarrative({
+          tick: this.tick,
+          phase: this.lastPercept?.temporal?.phase || 'unknown',
+          arousal: this.lastPercept?.fused?.arousal || 0,
+          content: `Risk adjustment blocked: ${intention.parameter} ` +
+            `${intention.currentValue} → ${intention.proposedValue}. ${dharmaCheck.reason}`,
+          significance: 0.7,
+          tags: ['risk-adjustment', 'blocked', intention.triggerPattern],
+        });
+
+        console.log(
+          `  [risk] Blocked: ${intention.parameter} ${intention.currentValue} → ${intention.proposedValue} — ${dharmaCheck.reason}`
+        );
+      }
+    }
+  }
+
+  getPerformanceMetrics() {
+    return this.performanceMonitor.analyze();
+  }
+
+  getRiskAdjustmentHistory(hours: number = 24) {
+    return this.memory.getRiskAdjustments(hours);
+  }
+
+  getRiskAdjustmentStats(hours: number = 24) {
+    return this.memory.getRiskAdjustmentStats(hours);
   }
 
   // ─── Enlightenment State Reporting ──────────────────────────────
