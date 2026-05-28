@@ -56,8 +56,7 @@ binds:
     - name: mcp-federation
       matches:
       - path:
-          type: PathPrefix
-          value: /mcp
+          pathPrefix: /mcp
       policies:
         # CORS is required for browser/MCP clients to read the session header.
         cors:
@@ -185,8 +184,7 @@ binds:
     # - name: a2a-delegation
     #   matches:
     #   - path:
-    #       type: PathPrefix
-    #       value: /a2a
+    #       pathPrefix: /a2a
     #   backends:
     #   - a2a:
     #       host: hermes-a2a:9100      # an A2A-capable Hermes agent endpoint
