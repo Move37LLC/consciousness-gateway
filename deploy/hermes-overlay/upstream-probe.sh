@@ -31,12 +31,14 @@ curl -fsS -X POST "$URL" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 echo
 
-# 4) tools/call — invoke a Hermes tool through the overlay (a bounded delegation).
-echo ">> tools/call hermes_messages_send:"
+# 4) tools/call — invoke a federated tool through the overlay. filesystem's
+#    list_allowed_directories takes no args and is safe. (Exact namespaced tool
+#    names come from the tools/list output above — adjust if the separator differs.)
+echo ">> tools/call filesystem_list_allowed_directories:"
 curl -fsS -X POST "$URL" \
   -H 'Content-Type: application/json' -H "Accept: ${ACCEPT}" \
   ${SID:+-H "Mcp-Session-Id: ${SID}"} \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hermes_messages_send","arguments":{"channel":"gateway-delegation","content":"goal: summarize today consciousness papers; bounds: 120s"}}}'
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"filesystem_list_allowed_directories","arguments":{}}}'
 echo
 
 echo ">> probe complete; idling so you can exec further curls into this container."

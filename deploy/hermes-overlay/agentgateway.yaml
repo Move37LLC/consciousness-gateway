@@ -114,21 +114,18 @@ binds:
       - mcp:
           targets:
 
-          # ── Hermes messaging bridge (the stdio child process) ──────────────
-          # agentgateway spawns `hermes mcp serve` and owns its lifecycle.
-          # Exposes: hermes_messages_send, hermes_events_poll, hermes_events_wait,
-          #          hermes_conversations_list, hermes_channels_list, ...
-          - name: hermes
-            stdio:
-              cmd: hermes
-              args: ["mcp", "serve"]
-              # NOTE: no per-target `env` here. This build runs a TEXTUAL
-              # dollar-brace substitution over the WHOLE config file (comments
-              # included) and hard-errors on a missing var, so we avoid such
-              # refs entirely. The spawned child inherits agentgateway's process
-              # env, so HOME (set in the image) and any downstream secret
-              # (HERMES_AUTH_TOKEN) are provided at the CONTAINER level via
-              # docker-compose `environment:` — the implicit-trust hop.
+          # ── Hermes messaging bridge — TEMPORARILY DISABLED ────────────────
+          # `pip install hermes-agent` installed the WRONG package (runtime:
+          # "ModuleNotFoundError: No module named 'mcp_serve'"). The real
+          # NousResearch/hermes-agent MCP server is `mcp_serve.py` and must be
+          # installed FROM SOURCE and given its ~/.hermes config + credentials.
+          # A crashing target aborts the whole virtual-MCP initialize handshake,
+          # so it stays out until the image clones the real repo and
+          # `hermes mcp serve` (or `python mcp_serve.py`) starts cleanly.
+          # - name: hermes
+          #   stdio:
+          #     cmd: hermes
+          #     args: ["mcp", "serve"]
 
           # ── PHASE 1 — read-leaning federation (Kern-approved) ──────────────
           # Each target widens the Gateway's "body" with a vetted toolset; the
@@ -144,10 +141,14 @@ binds:
               cmd: npx
               args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
 
-          - name: git
-            stdio:
-              cmd: uvx
-              args: ["mcp-server-git", "--repository", "/workspace"]
+          # git — TEMPORARILY DISABLED: /workspace is an empty read-only dir,
+          # not a git repo ("/workspace is not a valid Git repository"). Re-enable
+          # by mounting a real repo at /workspace (docker-compose), allowing the
+          # index write or running read-only git ops.
+          # - name: git
+          #   stdio:
+          #     cmd: uvx
+          #     args: ["mcp-server-git", "--repository", "/workspace"]
 
           - name: fetch
             stdio:
