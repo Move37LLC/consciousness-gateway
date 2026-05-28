@@ -162,7 +162,7 @@ docker compose exec agentgateway sh -c 'ps -ef | grep "hermes mcp serve" | grep 
 
 ## 3b. Observability (Kern's visibility asks)
 
-Bring the stack up (Prometheus :9090, Jaeger :16686, Grafana :3001) and use:
+Bring the stack up (Prometheus :9090, Jaeger :16686, Grafana :3030) and use:
 
 **Tool invocation counts by namespace** (target name = namespace):
 

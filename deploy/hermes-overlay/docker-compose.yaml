@@ -99,7 +99,9 @@ services:
     container_name: grafana
     depends_on: [prometheus]
     ports:
-      - "3001:3000"
+      # Host 3001 is reserved by the trading module (Schwab OAuth:
+      # localhost:3001/auth/schwab). Use 3030 to avoid the collision.
+      - "3030:3000"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
