@@ -30,7 +30,7 @@ RUN apt-get update \
 # instant and quiet — no npx/uvx re-resolution (kills the PubGrub log spam and
 # the ~7s first-spawn latency that would otherwise hit every new session).
 RUN npm install -g @modelcontextprotocol/server-filesystem \
-    && pip install --no-cache-dir mcp-server-fetch mcp-server-time
+    && pip install --no-cache-dir mcp-server-fetch mcp-server-time mcp-server-git
 
 # Hermes (NousResearch/hermes-agent) — TODO, separate step. `pip install
 # hermes-agent` pulls an UNRELATED PyPI package (runtime ModuleNotFoundError

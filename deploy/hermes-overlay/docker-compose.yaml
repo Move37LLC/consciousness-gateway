@@ -34,14 +34,24 @@ services:
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"               # Phase 2 only
       # Downstream secret available to the spawned Hermes child (inherited env).
       HERMES_AUTH_TOKEN: "${HERMES_INTERNAL_SECRET:-sandbox-internal}"
+      # git target reads a host-owned, read-only mount: trust the dir and skip
+      # optional locks so `git status` doesn't try to write on the RO mount.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "*"
+      GIT_OPTIONAL_LOCKS: "0"
     volumes:
       - ./agentgateway.yaml:/etc/agentgateway/config.yaml:ro
       # Hermes session store (~/.hermes). Pre-seed config.yaml + a registered
       # agent/channel here so messages_send has somewhere to land.
       - hermes-home:/home/hermes/.hermes
       # Phase-1 read-only posture: /workspace is mounted READ-ONLY so the
-      # filesystem/git targets cannot mutate the tree even if write tools fire.
+      # filesystem target cannot mutate the tree even if write tools fire.
       - ./workspace:/workspace:ro
+      # The Gateway's OWN repo, read-only, for the git target only (history/
+      # status). Kept separate from /workspace so the filesystem tool never sees
+      # .env or other untracked secrets. ../.. = consciousness-gateway repo root.
+      - ../..:/repo:ro
     healthcheck:
       # Hit the stats endpoint (proves the process is up + config loaded)
       # WITHOUT doing a full MCP initialize — otherwise every healthcheck would

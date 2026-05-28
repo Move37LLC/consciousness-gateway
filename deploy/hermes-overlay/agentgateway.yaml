@@ -147,14 +147,17 @@ binds:
               cmd: mcp-server-filesystem
               args: ["/workspace"]
 
-          # git — TEMPORARILY DISABLED: /workspace is an empty read-only dir,
-          # not a git repo ("/workspace is not a valid Git repository"). Re-enable
-          # by mounting a real repo at /workspace (docker-compose), allowing the
-          # index write or running read-only git ops.
-          # - name: git
-          #   stdio:
-          #     cmd: uvx
-          #     args: ["mcp-server-git", "--repository", "/workspace"]
+          # git — read-only visibility into the Gateway's OWN repo (Create drive).
+          # Pre-installed console script (Dockerfile) → instant spawn. The repo is
+          # mounted read-only at /repo (docker-compose), SEPARATE from filesystem's
+          # /workspace so raw secrets (.env) are never exposed via the filesystem
+          # tool — git only surfaces tracked content, and .env is gitignored.
+          # safe.directory=* and GIT_OPTIONAL_LOCKS=0 are set on the container so
+          # git trusts the host-owned mount and won't try index-lock writes on RO.
+          - name: git
+            stdio:
+              cmd: mcp-server-git
+              args: ["--repository", "/repo"]
 
           - name: fetch
             stdio:

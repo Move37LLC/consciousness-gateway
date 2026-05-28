@@ -41,5 +41,13 @@ curl -fsS -X POST "$URL" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"filesystem_list_allowed_directories","arguments":{}}}'
 echo
 
+# 5) git_status — verify the git target sees the Gateway's own repo (Create drive).
+echo ">> tools/call git_status:"
+curl -fsS -X POST "$URL" \
+  -H 'Content-Type: application/json' -H "Accept: ${ACCEPT}" \
+  ${SID:+-H "Mcp-Session-Id: ${SID}"} \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"git_status","arguments":{"repo_path":"/repo"}}}'
+echo
+
 echo ">> probe complete; idling so you can exec further curls into this container."
 exec sleep infinity
