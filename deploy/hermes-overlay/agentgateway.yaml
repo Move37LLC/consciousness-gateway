@@ -123,16 +123,12 @@ binds:
             stdio:
               cmd: hermes
               args: ["mcp", "serve"]
-              # env is passed to the spawned process. If your agentgateway build
-              # rejects `env` here, set these on the container instead (compose).
-              env:
-                HOME: /home/hermes
-                HERMES_CONFIG: /home/hermes/.hermes/config.yaml
-                # Downstream secret injected via process env — NOT an HTTP header.
-                # stdio children cannot read HTTP auth, so trust is container-bound
-                # (implicit-trust hop). If your build doesn't interpolate ${...},
-                # set the literal on the container env in docker-compose instead.
-                HERMES_AUTH_TOKEN: "${HERMES_INTERNAL_SECRET}"
+              # NOTE: no per-target `env` here. This build resolves ${VAR} refs
+              # against agentgateway's OWN environment and hard-errors on a miss.
+              # The spawned child inherits agentgateway's process env, so HOME
+              # (set in the image) and any downstream secret (HERMES_AUTH_TOKEN)
+              # are provided at the CONTAINER level via docker-compose
+              # `environment:` — the implicit-trust, container-bound hop.
 
           # ── PHASE 1 — read-leaning federation (Kern-approved) ──────────────
           # Each target widens the Gateway's "body" with a vetted toolset; the

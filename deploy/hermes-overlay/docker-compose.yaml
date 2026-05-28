@@ -32,7 +32,8 @@ services:
     environment:
       RUST_LOG: "info,agentgateway=debug,mcp=debug"   # verbose transport tracing
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"               # Phase 2 only
-      HERMES_INTERNAL_SECRET: "${HERMES_INTERNAL_SECRET:-sandbox-internal}"
+      # Downstream secret available to the spawned Hermes child (inherited env).
+      HERMES_AUTH_TOKEN: "${HERMES_INTERNAL_SECRET:-sandbox-internal}"
     volumes:
       - ./agentgateway.yaml:/etc/agentgateway/config.yaml:ro
       # Hermes session store (~/.hermes). Pre-seed config.yaml + a registered
