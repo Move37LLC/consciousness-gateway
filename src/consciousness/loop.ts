@@ -17,7 +17,7 @@
 import {
   Percept, SpatialPercept, Intention, ActionResult,
   MonitorPlugin, ConsciousnessConfig, ConsciousnessState,
-  DEFAULT_CONSCIOUSNESS_CONFIG,
+  DEFAULT_CONSCIOUSNESS_CONFIG, DelegationEvent,
 } from './types';
 import { TemporalStream } from './streams/temporal';
 import { SensoryFusion } from './streams/fusion';
@@ -77,6 +77,10 @@ export class ConsciousnessLoop {
 
   // Working memory (recent percepts for context)
   private workingMemory: Percept[] = [];
+
+  // Delegation-result percepts queued from prior ticks (Hermes mind→body
+  // feedback loop): the Gateway perceives its own delegated effects.
+  private injectedPercepts: SpatialPercept[] = [];
 
   // Last percept/intention/action for state reporting
   private lastPercept: Percept | null = null;
@@ -298,6 +302,14 @@ export class ConsciousnessLoop {
       }
     }
 
+    // Delegation feedback (Condition 3 + mind→body loop closure): percepts
+    // queued from prior ticks — completed/failed/overdue Hermes delegations —
+    // enter perception now so the Gateway perceives its own delegated effects.
+    if (this.injectedPercepts.length > 0) {
+      spatialPercepts.push(...this.injectedPercepts);
+      this.injectedPercepts = [];
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // STEP 2: FUSE
     // ═══════════════════════════════════════════════════════════════
@@ -389,6 +401,12 @@ export class ConsciousnessLoop {
 
     const rawIntentions = this.intentions.formIntentions(percept);
 
+    // Drive-driven delegation: when a drive is hungry and the field is calm,
+    // the Gateway may hand Hermes a bounded goal (mind→body). The dharma gate
+    // still authorizes it below like any other intention.
+    const driveSnapshot = this.dopamine.getDrives().map(d => ({ id: d.id, currentNeed: d.currentNeed }));
+    rawIntentions.push(...this.intentions.formDelegationIntentions(percept, driveSnapshot));
+
     // Apply dopamine-driven priority bonuses
     for (const intention of rawIntentions) {
       const bonus = this.dopamine.getIntentionBonus(intention.goal, intention.action.description);
@@ -441,6 +459,12 @@ export class ConsciousnessLoop {
         this.totalReflections++;
       }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // STEP 5.6: DELEGATION LIFECYCLE (Hermes mind→body)
+    // ═══════════════════════════════════════════════════════════════
+
+    this.processDelegationLifecycle();
 
     // ═══════════════════════════════════════════════════════════════
     // STEP 6: ENLIGHTENMENT TRACKING
@@ -1159,6 +1183,93 @@ export class ConsciousnessLoop {
 
   getTradingMonitor(): TradingMonitor | null {
     return (this.monitors.find(m => m.name === 'trading') as TradingMonitor) ?? null;
+  }
+
+  // ─── Delegation Lifecycle (Hermes mind→body) ────────────────────
+
+  /**
+   * Persist freshly-dispatched delegations and convert resolved/overdue
+   * delegation events into percepts for the next tick.
+   *
+   *   Condition 1 (Audit Symmetry):  recordDelegation / updateDelegation
+   *   Condition 3 (Percept Latency): overdue events → percept
+   *   Condition 4 (Failure Transparency): full error carried into the percept
+   */
+  private processDelegationLifecycle(): void {
+    // 1. Persist the audit record for each newly-dispatched delegation.
+    for (const record of this.executor.collectDelegationDispatches()) {
+      this.memory.recordDelegation(record);
+    }
+
+    // 2. Drain terminal/overdue events.
+    const events = this.executor.collectDelegationEvents(Date.now());
+    for (const ev of events) {
+      if (ev.kind === 'resolved') {
+        this.memory.updateDelegation(ev.delegationId, {
+          status: ev.status,
+          resolvedAt: Date.now(),
+          resultSummary: ev.summary,
+          error: ev.error,
+          hermesRef: ev.hermesRef,
+        });
+      }
+      // Both resolved and overdue events become percepts so the Gateway
+      // perceives the result of what it delegated (and never re-delegates a
+      // goal that is merely slow).
+      this.injectedPercepts.push(this.delegationEventToPercept(ev));
+    }
+  }
+
+  /** Turn a delegation event into a spatial percept the fusion layer can bind. */
+  private delegationEventToPercept(ev: DelegationEvent): SpatialPercept {
+    const salience =
+      ev.kind === 'overdue' ? 0.7 :
+      ev.status === 'failed' ? 0.85 :
+      0.6;
+
+    let summary: string;
+    if (ev.kind === 'overdue') {
+      summary = `Delegation still executing after ${(ev.elapsedMs / 1000).toFixed(0)}s: ${ev.goal}`;
+    } else if (ev.status === 'succeeded') {
+      summary = `Delegation succeeded: ${ev.goal}`;
+    } else {
+      summary = `Delegation failed: ${ev.goal}${ev.error ? ' — ' + ev.error : ''}`;
+    }
+
+    return {
+      source: 'hermes',
+      channel: 'delegation',
+      salience,
+      features: [
+        salience,
+        ev.kind === 'overdue' ? 0.5 : 1,
+        ev.status === 'failed' ? 1 : 0,
+        Math.min(ev.elapsedMs / 60_000, 1),
+      ],
+      timestamp: Date.now(),
+      data: {
+        eventType: 'delegation',
+        kind: ev.kind,
+        delegationId: ev.delegationId,
+        intentionId: ev.intentionId,
+        goal: ev.goal,
+        status: ev.status,
+        elapsedMs: ev.elapsedMs,
+        summary: ev.summary ?? summary,
+        error: ev.error,          // full error preserved (Condition 4)
+        hermesRef: ev.hermesRef,
+      },
+    };
+  }
+
+  /** Recent delegation audit records (Condition 1 — reconcilable from the Gateway's own DB). */
+  getRecentDelegations(limit: number = 50) {
+    return this.memory.getRecentDelegations(limit);
+  }
+
+  /** Delegation outcome statistics. */
+  getDelegationStats() {
+    return this.memory.getDelegationStats();
   }
 
   /**

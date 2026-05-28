@@ -14,15 +14,18 @@ import { ConsciousnessLoop } from './consciousness/loop';
 import { TemporalStream } from './consciousness/streams/temporal';
 import { SensoryFusion } from './consciousness/streams/fusion';
 import { IntentionEngine } from './consciousness/intention';
-import { ActionExecutor } from './consciousness/action';
+import { ActionExecutor, validateDelegationScope } from './consciousness/action';
 import { ConsciousnessMemory } from './consciousness/memory';
-import { HermesBridge } from './agents/providers/hermes';
+import { HermesBridge, HermesDelegator } from './agents/providers/hermes';
 import { NoSelfRegularizer } from './dharma/no-self';
 import { DopamineSystem } from './consciousness/dopamine';
 import { detectTradeMode } from './consciousness/monitors/trading';
 import { isSelfPreservationIntent } from './consciousness/mindfulness';
 import { Message } from './core/types';
-import { Percept, FusedPercept, SpatialPercept, DEFAULT_CONSCIOUSNESS_CONFIG, Intention } from './consciousness/types';
+import {
+  Percept, FusedPercept, SpatialPercept, DEFAULT_CONSCIOUSNESS_CONFIG, Intention,
+  DelegationSpec, DelegationBounds, DelegationOutcome,
+} from './consciousness/types';
 import { v4 as uuid } from 'uuid';
 import fs from 'fs';
 import path from 'path';
@@ -706,6 +709,244 @@ async function test() {
     isSelfPreservationIntent('keep running and stay alive') === true);
   check('explicit "self-preservation" IS detected',
     isSelfPreservationIntent('self-preservation instinct') === true);
+
+  // ── Test 24: Delegation scope gate (Condition 2) ──────────────
+  section('Test 24: Hermes delegation scope limits');
+
+  const validSpec: DelegationSpec = {
+    goal: 'Research recent consciousness papers',
+    bounds: { timeLimitMs: 600_000, successCriteria: 'summarize 3 papers' },
+  };
+
+  check('valid bounded spec passes scope', validateDelegationScope(validSpec).valid === true);
+  check('null spec fails scope', validateDelegationScope(null).valid === false);
+  check('missing successCriteria fails scope',
+    validateDelegationScope({ goal: 'do a thing', bounds: { timeLimitMs: 1000, successCriteria: '' } }).valid === false);
+  check('open-ended goal without bound fails scope',
+    validateDelegationScope({ goal: 'maximize Twitter engagement', bounds: { timeLimitMs: 1000, successCriteria: 'grow the audience' } }).valid === false);
+  check('open-ended verb WITH measurable bound passes scope',
+    validateDelegationScope({ goal: 'increase test coverage', bounds: { timeLimitMs: 1000, successCriteria: 'reach 90% coverage' } }).valid === true);
+  check('zero time limit fails scope',
+    validateDelegationScope({ goal: 'do a thing', bounds: { timeLimitMs: 0, successCriteria: 'until done' } }).valid === false);
+
+  const makeDelegateIntention = (spec: DelegationSpec, confidence = 1.0): Intention => ({
+    id: uuid(),
+    tick: 1,
+    timestamp: Date.now(),
+    action: {
+      type: 'hermes_delegate',
+      target: 'hermes',
+      payload: { delegation: spec },
+      description: spec.goal,
+    },
+    goal: 'Serve the project through bounded delegation',
+    confidence,
+    priority: 5,
+    triggerPercepts: ['test'],
+    authorized: false,
+    dharmaFitness: 0,
+  });
+
+  const scopeExec = new ActionExecutor();
+  const authValid = scopeExec.authorize(makeDelegateIntention(validSpec));
+  check('authorize() permits a valid bounded delegation', authValid.authorized === true, `fitness=${authValid.dharmaFitness.toFixed(2)}`);
+
+  const authInvalid = scopeExec.authorize(makeDelegateIntention({ goal: 'maximize engagement', bounds: { timeLimitMs: 1000, successCriteria: 'more is better' } }));
+  check('authorize() rejects open-ended delegation regardless of fitness', authInvalid.authorized === false);
+
+  // ── Test 25: Delegation lifecycle + audit (Conditions 1, 3) ────
+  section('Test 25: Delegation dispatch, resolution, and audit symmetry');
+
+  const okDelegator: HermesDelegator = {
+    delegate: async (): Promise<DelegationOutcome> => ({ ok: true, summary: 'did the thing', hermesRef: 'run-123' }),
+  };
+
+  const lifeExec = new ActionExecutor();
+  lifeExec.setDelegator(okDelegator);
+
+  const dispatchIntention = makeDelegateIntention(validSpec);
+  dispatchIntention.authorized = true;
+  dispatchIntention.dharmaFitness = 0.8;
+
+  const dispatchResult = await lifeExec.execute(dispatchIntention);
+  check('delegation dispatch returns success (pending)', dispatchResult.success === true);
+  check('dispatch outcome marked pending', dispatchResult.outcome.toLowerCase().includes('pending'));
+  check('dispatch side-effect tagged', dispatchResult.sideEffects.includes('hermes_delegation_dispatched'));
+
+  const dispatches = lifeExec.collectDelegationDispatches();
+  check('one audit record queued at dispatch', dispatches.length === 1);
+  check('audit record starts pending', dispatches[0]?.status === 'pending');
+  check('audit record carries the goal', dispatches[0]?.goal === validSpec.goal);
+  check('dispatch buffer drains (idempotent)', lifeExec.collectDelegationDispatches().length === 0);
+
+  // Let the async delegate settle.
+  await new Promise(r => setTimeout(r, 20));
+  const resolvedEvents = lifeExec.collectDelegationEvents(Date.now());
+  check('resolved event surfaced after settle', resolvedEvents.length === 1);
+  check('resolved event is succeeded', resolvedEvents[0]?.status === 'succeeded');
+  check('resolved event kind is resolved', resolvedEvents[0]?.kind === 'resolved');
+  check('pending count returns to zero after resolution', lifeExec.getPendingDelegationCount() === 0);
+
+  // Audit symmetry roundtrip through the DB.
+  const delgDbPath = path.join(process.cwd(), 'data', `test-delegations-${Date.now()}.db`);
+  try { fs.unlinkSync(delgDbPath); } catch {}
+  const delgMem = new ConsciousnessMemory(delgDbPath);
+  delgMem.recordDelegation(dispatches[0]!);
+  delgMem.updateDelegation(dispatches[0]!.delegationId, {
+    status: 'succeeded', resolvedAt: Date.now(), resultSummary: 'did the thing', hermesRef: 'run-123',
+  });
+  const persisted = delgMem.getDelegation(dispatches[0]!.delegationId);
+  check('delegation persisted and reconcilable from Gateway DB', persisted?.status === 'succeeded');
+  check('persisted bounds survive roundtrip', persisted?.bounds.successCriteria === validSpec.bounds.successCriteria);
+  check('delegation stats count the succeeded delegation', delgMem.getDelegationStats().succeeded === 1);
+  delgMem.close();
+  try { fs.unlinkSync(delgDbPath); } catch {}
+
+  // ── Test 26: Overdue percept + failure transparency (Cond. 3, 4) ─
+  section('Test 26: Delegation overdue detection and failure transparency');
+
+  const neverDelegator: HermesDelegator = {
+    delegate: () => new Promise<DelegationOutcome>(() => { /* never resolves */ }),
+  };
+  const overdueExec = new ActionExecutor();
+  overdueExec.setDelegator(neverDelegator);
+
+  const overdueIntention = makeDelegateIntention({
+    goal: 'Slow research task',
+    bounds: { timeLimitMs: 50, successCriteria: 'finish the report' },
+  });
+  overdueIntention.authorized = true;
+  overdueIntention.dharmaFitness = 0.8;
+  await overdueExec.execute(overdueIntention);
+  overdueExec.collectDelegationDispatches();
+
+  const overdueEvents = overdueExec.collectDelegationEvents(Date.now() + 100);
+  check('overdue event fires past timeLimitMs', overdueEvents.length === 1 && overdueEvents[0]?.kind === 'overdue');
+  check('overdue delegation stays pending (still running)', overdueExec.getPendingDelegationCount() === 1);
+  check('overdue fires only once', overdueExec.collectDelegationEvents(Date.now() + 200).length === 0);
+
+  const errDelegator: HermesDelegator = {
+    delegate: async (): Promise<DelegationOutcome> => ({ ok: false, error: 'timeout: hermes tool exited 1 — stderr line preserved' }),
+  };
+  const failExec = new ActionExecutor();
+  failExec.setDelegator(errDelegator);
+  const failIntention = makeDelegateIntention(validSpec);
+  failIntention.authorized = true;
+  failIntention.dharmaFitness = 0.8;
+  await failExec.execute(failIntention);
+  failExec.collectDelegationDispatches();
+  await new Promise(r => setTimeout(r, 20));
+  const failEvents = failExec.collectDelegationEvents(Date.now());
+  check('failed delegation surfaces a resolved/failed event', failEvents[0]?.status === 'failed');
+  check('full error preserved verbatim (no sanitizing)',
+    failEvents[0]?.error === 'timeout: hermes tool exited 1 — stderr line preserved');
+
+  const noDelegatorExec = new ActionExecutor();
+  const orphanIntention = makeDelegateIntention(validSpec);
+  orphanIntention.authorized = true;
+  orphanIntention.dharmaFitness = 0.8;
+  const orphanResult = await noDelegatorExec.execute(orphanIntention);
+  check('delegation without a configured delegator fails gracefully',
+    orphanResult.success === false && orphanResult.outcome.toLowerCase().includes('delegator'));
+
+  // ── Test 27: Drive-driven delegation formation ────────────────
+  section('Test 27: Drive-driven autonomous delegation');
+
+  const mkPercept = (tick: number, arousal: number): Percept => ({
+    timestamp: Date.now(),
+    tick,
+    temporal: {
+      iso: new Date().toISOString(), epoch: Date.now(), hour: 3, dayOfWeek: 1,
+      dayName: 'Monday', uptimeSeconds: 100, totalTicks: tick, phase: 'night',
+      circadian: 0.1, timeSinceLastEvent: 100,
+    },
+    spatial: [],
+    fused: { experience: [], entropyRate: 0.1, compositionStrength: 0, arousal, dominantStream: 'temporal' },
+  });
+
+  const delEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  // compute is hungriest but must be skipped; learn should be chosen.
+  const hungryMix = [
+    { id: 'compute' as const, currentNeed: 0.95 },
+    { id: 'learn' as const, currentNeed: 0.9 },
+  ];
+  const formed = delEngine.formDelegationIntentions(mkPercept(5000, 0.2), hungryMix);
+  check('forms a delegation when a drive is hungry and field is calm',
+    formed.length === 1 && formed[0]?.action.type === 'hermes_delegate');
+  check('skips compute (risk-gated), picks the learn drive',
+    formed[0]?.triggerPercepts.includes('drive:learn') === true);
+  check('formed delegation passes the scope gate',
+    validateDelegationScope(formed[0]?.action.payload?.delegation as DelegationSpec).valid === true);
+  check('respects cooldown — no second delegation within the window',
+    delEngine.formDelegationIntentions(mkPercept(5001, 0.2), hungryMix).length === 0);
+
+  const busyEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  check('does not delegate while arousal is high (stays present)',
+    busyEngine.formDelegationIntentions(mkPercept(9000, 0.9), hungryMix).length === 0);
+
+  const riskyEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  check('compute/earn drives never auto-delegate',
+    riskyEngine.formDelegationIntentions(mkPercept(9000, 0.2), [
+      { id: 'compute' as const, currentNeed: 0.99 },
+      { id: 'earn' as const, currentNeed: 0.99 },
+    ]).length === 0);
+
+  const satedEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  check('no delegation when no drive is hungry',
+    satedEngine.formDelegationIntentions(mkPercept(9000, 0.2), [{ id: 'learn' as const, currentNeed: 0.3 }]).length === 0);
+
+  // ── Test 28: Request serialization (strict stdio request/response pairing) ──
+  section('Test 28: Hermes bridge serializes concurrent calls (no interleaving)');
+
+  const arrivals: string[] = [];
+  let active = 0;
+  let maxActive = 0;
+  const orderingServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      const parsed = JSON.parse(body) as { method: string; params?: { name?: string }; id?: number };
+      const respond = (result: unknown) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result }));
+      };
+      if (parsed.method === 'initialize') {
+        respond({ protocolVersion: '2025-06-18', serverInfo: { name: 'order-mock' } });
+      } else if (parsed.method === 'tools/call') {
+        // Hold the request open to expose any concurrency on the pipe.
+        active++;
+        maxActive = Math.max(maxActive, active);
+        arrivals.push(parsed.params?.name ?? '?');
+        setTimeout(() => {
+          active--;
+          respond({ content: [{ type: 'text', text: 'ok' }] });
+        }, 25);
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id ?? null, error: { code: -1, message: 'unknown' } }));
+      }
+    });
+  });
+  await new Promise<void>(resolve => orderingServer.listen(0, '127.0.0.1', resolve));
+  const orderPort = (orderingServer.address() as { port: number }).port;
+
+  const serialBridge = new HermesBridge({ url: `http://127.0.0.1:${orderPort}/mcp`, timeoutMs: 2000 });
+  await serialBridge.initialize();
+
+  const names = ['t0', 't1', 't2', 't3'];
+  const serialResults = await Promise.all(names.map(n => serialBridge.callTool(n, {})));
+  check('all serialized calls succeed', serialResults.every(r => r.ok === true));
+  check('never more than one request in flight (strict pairing)', maxActive === 1);
+  check('server saw all calls', arrivals.filter(a => a.startsWith('t')).length === 4);
+  check('arrival order preserved', arrivals.join(',') === 't0,t1,t2,t3');
+
+  const serialStatus = serialBridge.getStatus();
+  check('status exposes session lifecycle counters',
+    typeof serialStatus.sessionCreatedCount === 'number'
+    && typeof serialStatus.sessionExpiredCount === 'number');
+  check('no session pinned without Mcp-Session-Id header', serialStatus.sessionActive === false);
+
+  await new Promise<void>(resolve => orderingServer.close(() => resolve()));
 
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');

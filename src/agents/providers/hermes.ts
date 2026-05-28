@@ -25,6 +25,25 @@
  * keeps ticking and intentions targeting Hermes simply fail authorization.
  */
 
+import { DelegationBounds, DelegationOutcome } from '../../consciousness/types';
+
+// ─── Delegation Transport (Gateway = mind, Hermes = body) ────────────
+
+/**
+ * The boundary the Gateway crosses to reach Hermes' body. The Gateway hands
+ * a bounded GOAL across; Hermes' agent loop chooses the means. Keeping this
+ * an interface (not a concrete bridge) lets the executor be tested with a
+ * mock, and lets the real transport be swapped/verified independently.
+ *
+ * NOTE: the concrete tool/transport mapping (which Hermes MCP tool carries
+ * the goal, and how the result is polled back) MUST be verified against the
+ * actual `hermes mcp serve` schema on the deployment host. Hermes' real MCP
+ * surface is stdio + messaging-shaped; do not assume an `agent.run` HTTP tool.
+ */
+export interface HermesDelegator {
+  delegate(goal: string, bounds: DelegationBounds, context?: string): Promise<DelegationOutcome>;
+}
+
 // ─── Public Types ────────────────────────────────────────────────────
 
 /**
@@ -54,6 +73,15 @@ export interface HermesBridgeConfig {
   toolMap?: Partial<Record<HermesCapability, string>>;
   /** Per-call timeout in ms. Default 30s. */
   timeoutMs?: number;
+  /** MCP tool name that accepts a delegated goal. MUST be verified against the
+   *  installed Hermes' `mcp serve` schema on the deployment host. Default
+   *  'messages_send' (Hermes' real surface is messaging-shaped). */
+  delegationTool?: string;
+  /** Serialize outbound JSON-RPC so only one request is in flight at a time
+   *  over the session's stdio pipe — guarantees strict request/response
+   *  pairing through agentgateway. Default true. Set false only if a future
+   *  transport safely supports pipelining. */
+  serializeRequests?: boolean;
 }
 
 export interface HermesToolDescriptor {
@@ -81,11 +109,24 @@ const DEFAULT_TOOL_MAP: Record<HermesCapability, string> = {
 
 // ─── Bridge ──────────────────────────────────────────────────────────
 
-export class HermesBridge {
+export class HermesBridge implements HermesDelegator {
   readonly name = 'hermes';
   private readonly config: HermesBridgeConfig;
   private nextId = 1;
   private initialized = false;
+  /** Streamable-HTTP session handle. Captured from the `Mcp-Session-Id`
+   *  response header at initialize() and replayed on every subsequent call so
+   *  the overlay routes us to the SAME spawned Hermes stdio process. Without
+   *  it, send→poll races against an uninitialized/foreign stdio buffer. */
+  private sessionId: string | null = null;
+  /** Session-lifecycle telemetry (Kern's visibility ask). A new session id
+   *  bumps `created`; a 404 on an established session bumps `expired`
+   *  (an orphaned poll). Surfaced via getStatus(). */
+  private sessionCreatedCount = 0;
+  private sessionExpiredCount = 0;
+  private sessionEstablishedAt = 0;
+  /** Single-flight chain enforcing strict request/response pairing. */
+  private requestChain: Promise<void> = Promise.resolve();
   private cachedTools: HermesToolDescriptor[] | null = null;
   private lastReachableAt = 0;
   private lastFailureAt = 0;
@@ -96,6 +137,7 @@ export class HermesBridge {
       url: process.env.HERMES_MCP_URL,
       authToken: process.env.HERMES_AUTH_TOKEN,
       timeoutMs: 30_000,
+      serializeRequests: true,
       ...(config ?? {}),
     };
   }
@@ -132,6 +174,10 @@ export class HermesBridge {
 
     if (result.ok) {
       this.initialized = true;
+      // MCP handshake completion — Streamable HTTP servers (incl. agentgateway)
+      // require this notification before tools/list and tools/call are served.
+      // Best-effort: the session is already usable if this is dropped.
+      await this.rpc('notifications/initialized', undefined);
     }
     return result;
   }
@@ -241,6 +287,42 @@ export class HermesBridge {
     return this.invokeCapability('memory_search', args as unknown as Record<string, unknown>);
   }
 
+  // ─── Delegation (HermesDelegator) ──────────────────────────────────
+
+  /**
+   * Delegate a bounded goal to Hermes' agent loop (Gateway = mind, Hermes =
+   * body). The Gateway supplies the what/why; Hermes selects the means.
+   *
+   * Transport caveat: this routes the goal through a single configurable MCP
+   * tool (`delegationTool`, default 'messages_send'). The real Hermes surface
+   * is stdio + messaging, and asynchronous goal completion is observed by
+   * polling Hermes' events — that round-trip MUST be wired and verified
+   * against the live `hermes mcp serve` schema on the deployment host. Until
+   * then this returns the dispatch acknowledgement as the outcome.
+   */
+  async delegate(goal: string, bounds: DelegationBounds, context?: string): Promise<DelegationOutcome> {
+    if (!this.available) {
+      return { ok: false, error: 'Hermes delegator not configured (HERMES_MCP_URL unset)' };
+    }
+
+    const tool = this.config.delegationTool ?? 'messages_send';
+    const result = await this.callTool(tool, {
+      goal,
+      successCriteria: bounds.successCriteria,
+      timeLimitMs: bounds.timeLimitMs,
+      maxResourceUnits: bounds.maxResourceUnits,
+      context,
+    });
+
+    if (!result.ok) {
+      // Preserve the full reason + detail verbatim (Condition 4).
+      const error = `${result.reason}${result.detail ? ': ' + result.detail : ''}`;
+      return { ok: false, error };
+    }
+
+    return { ok: true, summary: result.content || 'delegation acknowledged', hermesRef: undefined };
+  }
+
   // ─── Status ────────────────────────────────────────────────────────
 
   getStatus(): {
@@ -253,6 +335,10 @@ export class HermesBridge {
     lastFailureReason: string | null;
     toolCount: number | null;
     url: string | null;
+    sessionActive: boolean;
+    sessionCreatedCount: number;
+    sessionExpiredCount: number;
+    sessionEstablishedAt: number;
   } {
     return {
       name: this.name,
@@ -264,6 +350,10 @@ export class HermesBridge {
       lastFailureReason: this.lastFailureReason,
       toolCount: this.cachedTools?.length ?? null,
       url: this.config.url ?? null,
+      sessionActive: this.sessionId !== null,
+      sessionCreatedCount: this.sessionCreatedCount,
+      sessionExpiredCount: this.sessionExpiredCount,
+      sessionEstablishedAt: this.sessionEstablishedAt,
     };
   }
 
@@ -277,21 +367,52 @@ export class HermesBridge {
     return this.callTool(name, args);
   }
 
-  private async rpc(method: string, params: unknown): Promise<HermesCallResult> {
+  /**
+   * Public entry point. Serializes requests onto a single in-flight chain so
+   * the stdio pipe that agentgateway pins per session never sees interleaved
+   * calls — Hermes' request/response state machine stays strictly paired.
+   * Out-of-order delivery (Kern's concern) is structurally prevented here, and
+   * JSON-RPC `id` correlation handles it at the protocol level as a backstop.
+   */
+  private rpc(method: string, params: unknown): Promise<HermesCallResult> {
+    if (this.config.serializeRequests === false) {
+      return this.executeRpc(method, params);
+    }
+    const run = this.requestChain.then(() => this.executeRpc(method, params));
+    // Keep the chain alive regardless of any single call's outcome.
+    this.requestChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async executeRpc(method: string, params: unknown): Promise<HermesCallResult> {
     if (!this.config.url) {
       return { ok: false, reason: 'unavailable', detail: 'no URL' };
     }
 
-    const id = this.nextId++;
-    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+    const isNotification = method.startsWith('notifications/');
+    const body = isNotification
+      ? JSON.stringify({ jsonrpc: '2.0', method, params })
+      : JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params });
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 30_000);
 
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        // Streamable HTTP: the server may answer with a single JSON body OR an
+        // SSE frame, so we must advertise both.
+        Accept: 'application/json, text/event-stream',
+      };
       if (this.config.authToken) {
         headers['Authorization'] = `Bearer ${this.config.authToken}`;
+      }
+      // Replay the session handle so the overlay pins us to the same stdio proc.
+      if (this.sessionId) {
+        headers['Mcp-Session-Id'] = this.sessionId;
       }
 
       const response = await fetch(this.config.url, {
@@ -301,8 +422,26 @@ export class HermesBridge {
         signal: controller.signal,
       });
 
+      // Capture/refresh the session handle from any response that carries it.
+      const sid = response.headers.get('mcp-session-id');
+      if (sid && sid !== this.sessionId) {
+        this.sessionId = sid;
+        this.sessionCreatedCount++;
+        this.sessionEstablishedAt = Date.now();
+      }
+
       if (!response.ok) {
-        this.recordFailure(`HTTP ${response.status}`);
+        // 404 on a previously-good session means the overlay dropped/expired it.
+        // Clear local session state so the next call re-initializes cleanly.
+        if (response.status === 404 && this.sessionId) {
+          this.sessionId = null;
+          this.initialized = false;
+          this.sessionExpiredCount++;
+        }
+        // A fire-and-forget notification must never drag the bridge unhealthy.
+        if (!isNotification) {
+          this.recordFailure(`HTTP ${response.status}`);
+        }
         return {
           ok: false,
           reason: 'error',
@@ -311,12 +450,13 @@ export class HermesBridge {
         };
       }
 
-      const json = (await response.json()) as {
-        jsonrpc?: string;
-        id?: number;
-        result?: unknown;
-        error?: { code?: number; message?: string };
-      };
+      // Notifications carry no JSON-RPC response body (202 / empty) — done.
+      if (isNotification) {
+        this.lastReachableAt = Date.now();
+        return { ok: true, content: '', raw: null };
+      }
+
+      const json = await this.parseRpcResponse(response);
 
       if (json.error) {
         this.recordFailure(json.error.message ?? 'rpc error');
@@ -332,14 +472,51 @@ export class HermesBridge {
     } catch (err: unknown) {
       const isAbort = err instanceof Error && err.name === 'AbortError';
       if (isAbort) {
-        this.recordFailure('timeout');
+        if (!isNotification) this.recordFailure('timeout');
         return { ok: false, reason: 'timeout', detail: 'fetch aborted' };
       }
       const message = err instanceof Error ? err.message : String(err);
-      this.recordFailure(message);
+      if (!isNotification) this.recordFailure(message);
       return { ok: false, reason: 'error', detail: message };
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Parse a JSON-RPC response that may be either a plain JSON body or a single
+   * SSE frame (Streamable HTTP). For SSE we take the last `data:` line that
+   * parses as JSON — that's the response object for our request id.
+   */
+  private async parseRpcResponse(response: Response): Promise<{
+    jsonrpc?: string;
+    id?: number;
+    result?: unknown;
+    error?: { code?: number; message?: string };
+  }> {
+    const contentType = response.headers.get('content-type') ?? '';
+    const text = await response.text();
+
+    if (contentType.includes('text/event-stream')) {
+      const dataLines = text
+        .split(/\r?\n/)
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trim())
+        .filter(Boolean);
+      for (let i = dataLines.length - 1; i >= 0; i--) {
+        try {
+          return JSON.parse(dataLines[i]);
+        } catch {
+          /* keep scanning earlier frames */
+        }
+      }
+      return {};
+    }
+
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return {};
     }
   }
 

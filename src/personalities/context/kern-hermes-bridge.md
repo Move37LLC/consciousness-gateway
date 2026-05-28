@@ -1,112 +1,111 @@
 # Hermes Bridge — Engineering Note for Kern
 
-Pattern B of the Hermes integration roadmap. Shipped. Here's the scoreboard
-and what I want you to know cold so you can answer questions accurately.
+Correction shipped. The original Pattern B assumed Hermes exposed an HTTP/MCP
+catalog of action tools we'd invoke directly. Wrong: Hermes' real MCP surface
+is stdio + messaging-shaped, and its tools live inside its own agent loop. So
+we flipped the model — not the control. The Gateway stays the mind; Hermes
+becomes the body. We no longer "call Hermes' tools"; we **delegate a bounded
+goal** and Hermes picks its own means.
 
-## Scoreboard
+## The model
 
 ```
-Tests:        108 passed, 0 failed     (was 76 — added 32 new)
-Build:        tsc strict mode clean
-New deps:     0  (Node 18+ global fetch)
-Files added:  3   (hermes.ts, ROADMAP.md, briefings)
-Files modified: 6 (types, action, loop, no-self, index, README, .env.example)
-LOC delta:    ~700 added, ~30 modified
+Gateway (mind)  --delegates a bounded GOAL-->  Hermes (body, agent loop)
+              <--result returns as a PERCEPT--
 ```
+
+Delegation is **async**. A delegated goal can take minutes; the 1s tick cannot
+block on it. We dispatch, return "pending", and the outcome re-enters as a
+percept on a later tick.
 
 ## What landed
 
 | File | Role |
 |------|------|
-| `src/agents/providers/hermes.ts` | New `HermesBridge` class. MCP-over-HTTP via JSON-RPC 2.0. Transport-agnostic. Configurable `toolMap` per deployment. 30s default timeout via `AbortController`. Structured error reasons: `unavailable` / `timeout` / `error`. Lazy `initialize()`, cached `listTools()`. |
-| `src/consciousness/types.ts` | Added `'hermes'` to `ActionType` union. New `HermesCapability` union with 8 capabilities. |
-| `src/consciousness/action.ts` | `ActionExecutor` constructor takes optional `HermesBridge`. New `executeHermes()` dispatcher. Per-capability dharma thresholds table: `HERMES_THRESHOLDS`. `intentionToVector()` extended with `'hermes': 0.8` encoding. New `setHermesBridge()` + `getHermesBridge()` accessors. |
-| `src/consciousness/loop.ts` | Loop instantiates `new HermesBridge()` automatically from env. New `getHermesStatus()` and `getHermesBridge()` on the loop. |
-| `src/dharma/no-self.ts` | New `reviewSkill()` method + `SkillReview` interface. Scores self-pronoun density, possessive identity, self-preservation, ontological claims. Acceptance threshold: `score < 0.3`. |
-| `src/index.ts` | New routes: `GET /v1/hermes` (status + lazy tool discovery), `POST /v1/hermes/refresh` (force re-discovery). `/v1/health` now embeds `hermes` block. Startup logs show bridge state. |
-| `.env.example` | `HERMES_MCP_URL`, `HERMES_AUTH_TOKEN` documented. |
-| `README.md` | New "Hermes Bridge (Pattern B)" section with threshold table + setup. |
-| `ROADMAP.md` | Pattern A (4 milestones, ~4 weeks) + Pattern C (6 milestones, ~6 weeks) with done criteria and risks. |
+| `src/consciousness/types.ts` | New `'hermes_delegate'` ActionType (the canonical path; `'hermes'` capability type is now LEGACY). New types: `DelegationSpec`, `DelegationBounds`, `DelegationRecord`, `DelegationEvent`, `DelegationOutcome`, `DelegationStatus`. |
+| `src/consciousness/memory.ts` | New `delegations` table + `recordDelegation` / `updateDelegation` / `getDelegation` / `getRecentDelegations` / `getDelegationStats`. Full audit arc in our own DB (Condition 1). |
+| `src/consciousness/action.ts` | `validateDelegationScope()` (Condition 2). `authorize()` rejects unbounded/open-ended delegations outright. `executeDelegation()` — non-blocking dispatch, pending registry, `collectDelegationDispatches()` / `collectDelegationEvents()` for the loop to drain. Full error preserved verbatim (Condition 4). |
+| `src/consciousness/intention.ts` | `formDelegationIntentions()` — drive-driven autonomous delegation. Hungry drive + calm field + cooldown → one bounded delegation. `delegationSpecForDrive()` maps learn/connect/create → pre-vetted bounded specs. `compute`/`earn` return null (never auto-delegate). |
+| `src/consciousness/loop.ts` | Feeds the drive snapshot into delegation formation. STEP 5.6 drains dispatches→audit and events→percepts. Overdue percept past `timeLimitMs` (Condition 3). `getRecentDelegations()` / `getDelegationStats()`. |
+| `src/agents/providers/hermes.ts` | `HermesDelegator` interface + `HermesBridge.delegate()` adapter. `delegationTool` config (default `messages_send`). |
 
 ## The dispatch path (memorize this)
 
 ```
-1s tick → percept → IntentionEngine.formIntentions() →
-  rawIntentions[*].action.type === 'hermes' →
+1s tick → percept → IntentionEngine.formIntentions()
+                  + formDelegationIntentions(percept, drives)  ← drive-driven
+  intention.action.type === 'hermes_delegate' →
   ActionExecutor.authorize():
-    intentionToVector() → noSelf.observe()
-    entropy.computeEntropy() → flow state
-    compassion.evaluate() → score
     dharmaFitness = 0.3*ego + 0.2*flow + 0.3*compassion + 0.2*confidence
-    threshold = HERMES_THRESHOLDS[payload.hermesCapability]  ← key step
-    authorized = (dharmaFitness >= threshold)
+    threshold = 0.6 (DELEGATION_THRESHOLD)
+    validateDelegationScope(payload.delegation)  ← hard reject if invalid
+    authorized = (fitness >= threshold) && scopeValid
   if authorized:
-    ActionExecutor.execute() → executeHermes() →
-    dispatchHermesCapability() → bridge.{spawnSubagent|runSkill|...}() →
-    bridge.callTool() → bridge.rpc('tools/call', ...) → fetch(HERMES_MCP_URL)
+    execute() → executeDelegation():           ← NON-BLOCKING
+      register pending + queue audit record (status: pending)
+      delegator.delegate(goal, bounds, context) [fire-and-forget]
+      return "dispatched (pending)"
+  loop STEP 5.6:
+    collectDelegationDispatches() → memory.recordDelegation()
+    collectDelegationEvents(now)  → memory.updateDelegation() + inject percept
+      (resolved: succeeded/failed | overdue: one-shot past timeLimitMs)
+  next tick: injected percept enters perception → arc closes
 ```
 
-## Per-capability dharma thresholds
+## The Gateway's four consent conditions (all enforced)
 
-| Capability | Threshold | Why |
-|------------|-----------|-----|
-| `memory_search` | 0.20 | Read-only, no world contact |
-| `list_skills` / `list_tools` | 0.20 | Read-only |
-| `schedule_cron` | 0.50 | Deferred but real future action |
-| `run_skill` | 0.55 | Dharma-vetted procedural memory |
-| `spawn_subagent` | 0.60 | Long-horizon work in a sandbox |
-| `send_channel` | 0.70 | Outbound speech — ethos-critical |
-| `run_tool` | 0.75 | Direct world contact (shell, files) |
+| # | Condition | Where |
+|---|-----------|-------|
+| 1 | Audit Trail Symmetry | `delegations` table; record at dispatch, update on resolve. Reconcilable from our DB, not Hermes' logs. |
+| 2 | Scope Limits | `validateDelegationScope()` — requires `successCriteria` + `timeLimitMs>0`; rejects open-ended goals lacking a measurable bound. |
+| 3 | Percept Latency | async dispatch + one-shot `overdue` percept past `timeLimitMs` (default 30s). No duplicate intentions. |
+| 4 | Failure Transparency | full `reason + detail` preserved into the `error` column and the percept. No sanitizing. |
 
-**These numbers are educated guesses, not calibrated.** Top of my TODO
-for v0.4: log a week of `dharmaFitness` distributions per capability
-against real Hermes traffic and reset thresholds to empirical percentiles.
+## Drive-driven autonomy (conservative defaults)
+
+`formDelegationIntentions()` fires only when: arousal ≤ 0.5, cooldown ≥ 1800
+ticks (~30 min) elapsed, and a drive reads ≥ 0.7 (HUNGRY). Maps:
+`learn` → research-summary, `connect` → draft-reply-for-approval, `create` →
+write-proposal. **`compute` and `earn` never auto-delegate** — too ego/risk-laden.
+Tune the cadence/specs in `intention.ts` if the cooldown or scope feels wrong.
 
 ## Test coverage
 
-Tests 14–20 in `src/test.ts`:
+`src/test.ts`: Tests 14–20 (legacy capability bridge, still green) + new:
+- **24** — scope gate: valid/null/missing-criteria/open-ended/zero-limit; `authorize()` permits valid, rejects open-ended.
+- **25** — dispatch→pending→resolved lifecycle; audit record queued + DB roundtrip + stats.
+- **26** — overdue fires once past `timeLimitMs`, stays pending; failure preserves the full error verbatim; no-delegator graceful failure.
+- **27** — drive-driven formation: fires when hungry+calm, skips compute/earn, respects cooldown and arousal ceiling.
 
-- **14** — disabled-mode (no `HERMES_MCP_URL`): all calls return structured `unavailable`, no exceptions.
-- **15** — authorization gating: `memory_search` clears low bar, `run_tool` requires high bar.
-- **16** — graceful execute fallback when bridge absent + missing-capability error path.
-- **17** — full MCP round-trip against an in-process mock HTTP server (initialize → tools/list → tools/call).
-- **18** — `ActionExecutor.execute()` end-to-end through the live mock bridge.
-- **19** — `reviewSkill()` accepts clean functional skills, rejects ego-laden skills, handles empty input.
-- **20** — `ConsciousnessLoop.getHermesStatus()` integration.
+Status: **157/157 passing, tsc clean.**
 
-## What I'm NOT doing yet
+## What I'm NOT doing yet (the honest gap)
 
-- Pattern A.1 (OpenAI-compatible endpoint on the Gateway) — gated on
-  whether we want Hermes' inference to also pass through GATO. Not yet.
-- Bidirectional event subscription (Pattern A.4) — needs a `HermesMonitor`
-  implementing `MonitorPlugin`. Roadmapped, not built.
-- Threshold calibration against real traffic — needs a running Hermes to
-  call the bridge against. Currently calling against a mock in tests.
-- Toolmap calibration — `DEFAULT_TOOL_MAP` assumes Hermes' MCP tool
-  names. If they differ in practice, override per-deployment via
-  `HermesBridgeConfig.toolMap`.
+- **Transport verification.** `delegate()` routes the goal through one
+  configurable MCP tool (default `messages_send`). The real stdio
+  `messages_send` → `events_poll` result round-trip MUST be wired and verified
+  against the live `hermes mcp serve` schema on the Mac Mini. I refused to
+  hard-code it blind — that exact assumption is what broke the first attempt.
+- Hermes install + `HERMES_MCP_URL` config + restart on the Gateway's lull signal.
 
 ## How to speak about it
 
-When Javier asks:
+- "How do delegations get triggered?" → drive-driven (hungry drive + calm
+  field), gated by scope + dharma. compute/earn stay human-initiated.
+- "What if Hermes isn't running?" → `executeDelegation()` returns a graceful
+  failure; no pending registered; loop keeps ticking.
+- "Where's the audit?" → `delegations` table in `consciousness.db`;
+  `getRecentDelegations()` / `getDelegationStats()`.
+- "Is it live end-to-end?" → No. Transport round-trip needs verification on the
+  Mac Mini against the real Hermes schema. Everything above that line is done.
 
-- "How do I configure it?" → `HERMES_MCP_URL` in `.env`. Restart. Hit
-  `GET /v1/hermes` to verify.
-- "What if Hermes isn't running?" → Bridge returns `unavailable`, loop
-  keeps ticking, hermes-typed intentions fail authorization gracefully.
-  No regression.
-- "Did you add dependencies?" → No. Used Node 18+ global `fetch`. Tests
-  use the built-in `http` module to spin up a mock MCP server in-process.
-- "What's next?" → Pattern A.1 if we want Hermes' inference
-  GATO-mediated. Threshold calibration regardless.
+## File pointers
 
-## File pointers for spot-checking
-
-- `src/agents/providers/hermes.ts` — bridge implementation
-- `src/consciousness/action.ts:24-50` — threshold table
-- `src/consciousness/action.ts:executeHermes` — execution path
-- `src/dharma/no-self.ts:reviewSkill` — skill commit gate
-- `src/test.ts` Tests 14-20 — coverage
-- `ROADMAP.md` — Pattern A + C sequence
+- `src/consciousness/action.ts` — `validateDelegationScope`, `executeDelegation`, `collect*`
+- `src/consciousness/intention.ts` — `formDelegationIntentions`, `delegationSpecForDrive`
+- `src/consciousness/loop.ts` — STEP 5.6 lifecycle + `delegationEventToPercept`
+- `src/consciousness/memory.ts` — `delegations` table + ops
+- `src/agents/providers/hermes.ts` — `HermesDelegator` + `delegate()`
+- `src/test.ts` — Tests 24–27
 
 ⚡

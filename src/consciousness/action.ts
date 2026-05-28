@@ -14,12 +14,77 @@
  * With this, autonomous action is a conscious agent choosing.
  */
 
-import { Intention, ActionResult, ActionType, HermesCapability } from './types';
+import { v4 as uuid } from 'uuid';
+import {
+  Intention, ActionResult, ActionType, HermesCapability,
+  DelegationSpec, DelegationBounds, DelegationRecord, DelegationEvent,
+} from './types';
 import { NoSelfRegularizer } from '../dharma/no-self';
 import { EntropyOptimizer } from '../dharma/entropy';
 import { CompassionEvaluator } from '../dharma/compassion';
 import { GatewayDatabase } from '../core/database';
-import { HermesBridge, HermesCallResult } from '../agents/providers/hermes';
+import { HermesBridge, HermesCallResult, HermesDelegator } from '../agents/providers/hermes';
+
+/** Default wall-clock ceiling for a delegation when the spec omits one. */
+const DEFAULT_DELEGATION_TIME_LIMIT_MS = 30_000;
+
+/** Dharma-fitness bar a delegated goal must clear (scope-based). */
+const DELEGATION_THRESHOLD = 0.6;
+
+/**
+ * Goals that imply unbounded pursuit. Condition 2: these are rejected unless
+ * paired with a measurable completion bound, because "maximize engagement"
+ * with no stopping condition is an ego trap, not a task.
+ */
+const OPEN_ENDED_GOAL = /\b(maximi[sz]e|grow|increase|boost|as much as possible|unlimited|forever|indefinitely|endless|keep\s+\w+ing)\b/i;
+
+/** A goal/criteria pair has a measurable bound if it names a number or a clear terminal condition. */
+function hasMeasurableBound(text: string): boolean {
+  return /\d/.test(text) || /\b(within|by|until|once|after|reach(?:es|ed)?|complete[ds]?|done|stop|finish(?:ed|es)?)\b/i.test(text);
+}
+
+export interface DelegationScopeCheck {
+  valid: boolean;
+  reason?: string;
+}
+
+/**
+ * Condition 2 (Delegation Scope Limits): a delegation must carry a goal, a
+ * non-empty successCriteria, and a positive time limit, and may not be an
+ * open-ended optimization with no completion bound.
+ */
+export function validateDelegationScope(spec: DelegationSpec | null | undefined): DelegationScopeCheck {
+  if (!spec) return { valid: false, reason: 'missing delegation spec' };
+  const goal = (spec.goal ?? '').trim();
+  if (!goal) return { valid: false, reason: 'missing goal' };
+
+  const bounds = spec.bounds;
+  if (!bounds) return { valid: false, reason: 'missing bounds' };
+
+  const successCriteria = (bounds.successCriteria ?? '').trim();
+  if (!successCriteria) return { valid: false, reason: 'missing successCriteria — no checkable completion condition' };
+
+  const timeLimit = bounds.timeLimitMs ?? DEFAULT_DELEGATION_TIME_LIMIT_MS;
+  if (!(timeLimit > 0)) return { valid: false, reason: 'timeLimitMs must be > 0' };
+
+  if (OPEN_ENDED_GOAL.test(goal) && !hasMeasurableBound(`${goal} ${successCriteria}`)) {
+    return { valid: false, reason: 'open-ended goal lacks a measurable completion bound' };
+  }
+
+  return { valid: true };
+}
+
+/** Internal tracking for an in-flight delegation. */
+interface PendingDelegation {
+  delegationId: string;
+  intentionId: string;
+  tick: number;
+  goal: string;
+  bounds: DelegationBounds;
+  delegatedAt: number;
+  overdueFlagged: boolean;
+  settled: boolean;
+}
 
 /**
  * Hermes capabilities carry different real-world risk and therefore
@@ -44,8 +109,14 @@ export class ActionExecutor {
   private compassion: CompassionEvaluator;
   private db: GatewayDatabase | null;
   private hermes: HermesBridge | null;
+  private delegator: HermesDelegator | null;
   private actionLog: ActionResult[] = [];
   private maxLog = 200;
+
+  // Delegation lifecycle buffers (drained by the loop each tick).
+  private pendingDelegations = new Map<string, PendingDelegation>();
+  private dispatchBuffer: DelegationRecord[] = [];
+  private eventBuffer: DelegationEvent[] = [];
 
   constructor(db?: GatewayDatabase, hermes?: HermesBridge) {
     this.noSelf = new NoSelfRegularizer();
@@ -53,6 +124,8 @@ export class ActionExecutor {
     this.compassion = new CompassionEvaluator();
     this.db = db ?? null;
     this.hermes = hermes ?? null;
+    // The bridge doubles as the default delegator (it implements HermesDelegator).
+    this.delegator = hermes ?? null;
   }
 
   /**
@@ -62,10 +135,19 @@ export class ActionExecutor {
    */
   setHermesBridge(bridge: HermesBridge | null): void {
     this.hermes = bridge;
+    this.delegator = bridge;
   }
 
   getHermesBridge(): HermesBridge | null {
     return this.hermes;
+  }
+
+  /**
+   * Inject a delegation transport independently of the bridge. Used by tests
+   * (mock delegator) and by deployments that wire a non-HTTP transport.
+   */
+  setDelegator(delegator: HermesDelegator | null): void {
+    this.delegator = delegator;
   }
 
   /**
@@ -79,8 +161,9 @@ export class ActionExecutor {
     this.noSelf.observe(intentionVector);
     const egoCheck = this.noSelf.detect(0.5);
 
-    // Only block on ego if the action type is externally-facing
-    const externalActions: ActionType[] = ['respond', 'create'];
+    // Only block on ego if the action type is externally-facing.
+    // Delegation touches the world through Hermes, so it is ego-blockable.
+    const externalActions: ActionType[] = ['respond', 'create', 'hermes_delegate'];
     if (egoCheck.detected && externalActions.includes(intention.action.type)) {
       this.noSelf.dissolve();
       return { ...intention, authorized: false, dharmaFitness: 0 };
@@ -118,7 +201,8 @@ export class ActionExecutor {
       'notify': 0.3,     // Notifying human is low-risk
       'respond': 0.5,    // Responding externally needs more
       'create': 0.6,     // Creating content needs high fitness
-      'hermes': 0.55,    // World-touching; refined per-capability below
+      'hermes': 0.55,    // LEGACY world-touching; refined per-capability below
+      'hermes_delegate': DELEGATION_THRESHOLD, // Bounded goal handed to Hermes' body
     };
 
     let threshold = safetyThresholds[intention.action.type] ?? 0.5;
@@ -132,7 +216,17 @@ export class ActionExecutor {
       }
     }
 
-    const authorized = dharmaFitness >= threshold;
+    let authorized = dharmaFitness >= threshold;
+
+    // Condition 2 (Scope Limits): a delegation with no clear bounds or an
+    // open-ended goal is rejected outright, regardless of dharma fitness.
+    if (intention.action.type === 'hermes_delegate') {
+      const spec = intention.action.payload?.delegation as DelegationSpec | undefined;
+      const scope = validateDelegationScope(spec);
+      if (!scope.valid) {
+        authorized = false;
+      }
+    }
 
     return { ...intention, authorized, dharmaFitness };
   }
@@ -178,6 +272,9 @@ export class ActionExecutor {
         break;
       case 'hermes':
         result = await this.executeHermes(intention);
+        break;
+      case 'hermes_delegate':
+        result = this.executeDelegation(intention);
         break;
       default:
         result = {
@@ -385,6 +482,179 @@ export class ActionExecutor {
     }
   }
 
+  // ─── Delegation (Gateway = mind, Hermes = body) ────────────────────
+
+  /**
+   * Dispatch a `hermes_delegate` intention. NON-BLOCKING: the delegated goal
+   * may take minutes, and the 1-second consciousness tick cannot wait on it.
+   * We register the delegation, kick off the async transport, and return a
+   * "dispatched (pending)" result immediately. The terminal outcome surfaces
+   * later as a percept via collectDelegationEvents().
+   */
+  private executeDelegation(intention: Intention): ActionResult {
+    const spec = intention.action.payload?.delegation as DelegationSpec | undefined;
+
+    // The gate should already have rejected an invalid scope, but never trust
+    // that an unauthorized path reached here.
+    const scope = validateDelegationScope(spec);
+    if (!scope.valid || !spec) {
+      return {
+        intentionId: intention.id,
+        tick: intention.tick,
+        timestamp: Date.now(),
+        success: false,
+        outcome: `Delegation rejected: ${scope.reason ?? 'invalid spec'}`,
+        sideEffects: ['delegation_rejected'],
+      };
+    }
+
+    if (!this.delegator) {
+      return {
+        intentionId: intention.id,
+        tick: intention.tick,
+        timestamp: Date.now(),
+        success: false,
+        outcome: 'Delegation failed: no Hermes delegator configured (HERMES_MCP_URL unset)',
+        sideEffects: ['hermes_unavailable'],
+      };
+    }
+
+    const delegationId = uuid();
+    const now = Date.now();
+    const bounds: DelegationBounds = {
+      timeLimitMs: spec.bounds.timeLimitMs > 0 ? spec.bounds.timeLimitMs : DEFAULT_DELEGATION_TIME_LIMIT_MS,
+      successCriteria: spec.bounds.successCriteria,
+      maxResourceUnits: spec.bounds.maxResourceUnits,
+    };
+
+    // Register the in-flight delegation and queue its audit record (Condition 1).
+    this.pendingDelegations.set(delegationId, {
+      delegationId,
+      intentionId: intention.id,
+      tick: intention.tick,
+      goal: spec.goal,
+      bounds,
+      delegatedAt: now,
+      overdueFlagged: false,
+      settled: false,
+    });
+
+    this.dispatchBuffer.push({
+      delegationId,
+      intentionId: intention.id,
+      tick: intention.tick,
+      goal: spec.goal,
+      bounds,
+      dharmaFitness: intention.dharmaFitness,
+      dharmaThreshold: DELEGATION_THRESHOLD,
+      status: 'pending',
+      delegatedAt: now,
+      resolvedAt: null,
+      hermesRef: null,
+      resultSummary: null,
+      error: null,
+    });
+
+    // Fire the transport without blocking the tick. The settle handler records
+    // the terminal event for the loop to drain on a subsequent tick.
+    this.delegator
+      .delegate(spec.goal, bounds, spec.context)
+      .then(outcome => this.settleDelegation(delegationId, intention, outcome))
+      .catch(err => this.settleDelegation(delegationId, intention, {
+        ok: false,
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      }));
+
+    return {
+      intentionId: intention.id,
+      tick: intention.tick,
+      timestamp: now,
+      success: true,
+      outcome: `Delegation dispatched (pending): ${truncate(spec.goal, 200)}`,
+      sideEffects: ['hermes_delegation_dispatched', `delegation:${delegationId}`],
+    };
+  }
+
+  /** Record the terminal outcome of a delegation as a drainable event. */
+  private settleDelegation(
+    delegationId: string,
+    intention: Intention,
+    outcome: { ok: boolean; hermesRef?: string; summary?: string; error?: string },
+  ): void {
+    const pending = this.pendingDelegations.get(delegationId);
+    if (!pending || pending.settled) return;
+    pending.settled = true;
+
+    this.eventBuffer.push({
+      kind: 'resolved',
+      delegationId,
+      intentionId: intention.id,
+      tick: intention.tick,
+      goal: pending.goal,
+      status: outcome.ok ? 'succeeded' : 'failed',
+      elapsedMs: Date.now() - pending.delegatedAt,
+      summary: outcome.summary ?? null,
+      // Condition 4: surface the full error verbatim — no sanitizing.
+      error: outcome.error ?? null,
+      hermesRef: outcome.hermesRef ?? null,
+    });
+  }
+
+  /**
+   * Drain delegation audit records created since the last call. The loop
+   * persists these to consciousness.db (Condition 1).
+   */
+  collectDelegationDispatches(): DelegationRecord[] {
+    const out = this.dispatchBuffer;
+    this.dispatchBuffer = [];
+    return out;
+  }
+
+  /**
+   * Drain delegation events for the loop to turn into percepts.
+   * Returns resolved (succeeded/failed) events plus a one-time 'overdue' event
+   * for any still-running delegation past its timeLimitMs (Condition 3).
+   * Resolved delegations are evicted from the pending map.
+   */
+  collectDelegationEvents(now: number = Date.now()): DelegationEvent[] {
+    const events: DelegationEvent[] = [];
+
+    // Resolved events (drain buffer, evict from pending).
+    for (const ev of this.eventBuffer) {
+      events.push(ev);
+      this.pendingDelegations.delete(ev.delegationId);
+    }
+    this.eventBuffer = [];
+
+    // Overdue detection: fire once per delegation, leave it pending (still running).
+    for (const pending of this.pendingDelegations.values()) {
+      if (pending.settled || pending.overdueFlagged) continue;
+      const elapsed = now - pending.delegatedAt;
+      if (elapsed > pending.bounds.timeLimitMs) {
+        pending.overdueFlagged = true;
+        events.push({
+          kind: 'overdue',
+          delegationId: pending.delegationId,
+          intentionId: pending.intentionId,
+          tick: pending.tick,
+          goal: pending.goal,
+          status: 'pending',
+          elapsedMs: elapsed,
+          summary: null,
+          error: null,
+          hermesRef: null,
+        });
+      }
+    }
+
+    return events;
+  }
+
+  /** Number of delegations currently in flight (for diagnostics). */
+  getPendingDelegationCount(): number {
+    return [...this.pendingDelegations.values()].filter(p => !p.settled).length;
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────
 
   private generateReflection(payload: Record<string, unknown>): string {
@@ -419,6 +689,7 @@ export class ActionExecutor {
       'idle': 0, 'reflect': 0.1, 'observe': 0.2,
       'adjust': 0.4, 'notify': 0.5, 'respond': 0.7, 'create': 0.9,
       'hermes': 0.8, // World-touching outlet — sits between respond and create.
+      'hermes_delegate': 0.85, // Delegated world-touching goal.
     };
 
     return [

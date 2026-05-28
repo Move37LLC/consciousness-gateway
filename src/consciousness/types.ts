@@ -105,7 +105,8 @@ export type ActionType =
   | 'reflect'        // Internal reflection (log insight)
   | 'adjust'         // Adjust own parameters
   | 'idle'           // Consciously do nothing
-  | 'hermes';        // Dispatch into the Hermes Bridge (Pattern B outlet)
+  | 'hermes'         // LEGACY: direct capability dispatch (capability-based, deprecated)
+  | 'hermes_delegate'; // Delegate a bounded goal to Hermes' agent loop (mind→body)
 
 /**
  * Sub-capabilities accepted by the `hermes` action type. The IntendedAction
@@ -123,6 +124,94 @@ export type HermesCapability =
   | 'memory_search'
   | 'list_skills'
   | 'list_tools';
+
+// ─── Delegation (Gateway = mind, Hermes = body) ──────────────────────
+//
+// The corrected Hermes architecture. The Gateway does NOT invoke Hermes'
+// tools directly; it forms a dharma-cleared, bounded GOAL and delegates it
+// to Hermes' agent loop, which chooses its own means. Results return to the
+// Gateway as percepts on a later tick (delegation is async — it cannot block
+// the 1-second perception loop).
+//
+// The Gateway's four consent conditions are encoded here:
+//   1. Audit Trail Symmetry  → DelegationRecord persisted in consciousness.db
+//   2. Scope Limits          → DelegationBounds required; gate rejects open-ended goals
+//   3. Percept Latency       → timeLimitMs → overdue percept; DelegationEvent('overdue')
+//   4. Failure Transparency  → full error preserved on DelegationRecord + percept
+
+/** Lifecycle status of a delegated goal. */
+export type DelegationStatus = 'pending' | 'succeeded' | 'failed' | 'timeout';
+
+/**
+ * Hard bounds on a delegation. Condition 2: no goal may be open-ended.
+ * `successCriteria` is mandatory — a delegation with no checkable completion
+ * condition is an ego trap ("maximize engagement") and is rejected by the gate.
+ */
+export interface DelegationBounds {
+  /** Wall-clock ceiling. Past this, the loop emits an overdue percept. Default 30s. */
+  timeLimitMs: number;
+  /** Explicit, checkable completion condition. Required. */
+  successCriteria: string;
+  /** Optional ceiling on resource units (tool calls / subagent spawns). */
+  maxResourceUnits?: number;
+}
+
+/** What the Gateway hands to Hermes: the bounded goal (the "what" + "why"). */
+export interface DelegationSpec {
+  goal: string;
+  bounds: DelegationBounds;
+  /** Optional grounding context for Hermes. */
+  context?: string;
+}
+
+/** The transport-layer result of a single delegation attempt. */
+export interface DelegationOutcome {
+  ok: boolean;
+  /** Hermes-side reference (task/run id) when available. */
+  hermesRef?: string;
+  /** Human-readable summary of what Hermes did. */
+  summary?: string;
+  /** Full, unsanitized error (Condition 4). */
+  error?: string;
+}
+
+/**
+ * The persisted audit record (Condition 1). Captures the full arc:
+ * intention → dharma evaluation → delegation sent → result received.
+ */
+export interface DelegationRecord {
+  delegationId: string;
+  intentionId: string;
+  tick: number;
+  goal: string;
+  bounds: DelegationBounds;
+  dharmaFitness: number;
+  dharmaThreshold: number;
+  status: DelegationStatus;
+  delegatedAt: number;
+  resolvedAt: number | null;
+  hermesRef: string | null;
+  resultSummary: string | null;
+  error: string | null;
+}
+
+/**
+ * An event the executor surfaces back to the loop so it can become a percept.
+ * `resolved` carries the terminal status; `overdue` fires once when a still-
+ * running delegation passes its timeLimitMs (Condition 3).
+ */
+export interface DelegationEvent {
+  kind: 'resolved' | 'overdue';
+  delegationId: string;
+  intentionId: string;
+  tick: number;
+  goal: string;
+  status: DelegationStatus;
+  elapsedMs: number;
+  summary: string | null;
+  error: string | null;
+  hermesRef: string | null;
+}
 
 // ─── Action Result ──────────────────────────────────────────────────
 

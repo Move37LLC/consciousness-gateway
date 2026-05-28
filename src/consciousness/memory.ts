@@ -16,7 +16,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { MemoryEntry, Percept, Intention, ActionResult, RewardEvent, RewardType } from './types';
+import { MemoryEntry, Percept, Intention, ActionResult, RewardEvent, RewardType, DelegationRecord, DelegationStatus } from './types';
 
 export class ConsciousnessMemory {
   private db: Database.Database;
@@ -270,6 +270,26 @@ export class ConsciousnessMemory {
 
       CREATE INDEX IF NOT EXISTS idx_risk_adjustments_timestamp ON risk_adjustments(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_risk_adjustments_parameter ON risk_adjustments(parameter);
+
+      CREATE TABLE IF NOT EXISTS delegations (
+        delegation_id TEXT PRIMARY KEY,
+        intention_id TEXT NOT NULL,
+        tick INTEGER NOT NULL,
+        goal TEXT NOT NULL,
+        bounds TEXT NOT NULL DEFAULT '{}',
+        dharma_fitness REAL NOT NULL DEFAULT 0,
+        dharma_threshold REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        delegated_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        hermes_ref TEXT,
+        result_summary TEXT,
+        error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_delegations_delegated_at ON delegations(delegated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_delegations_status ON delegations(status);
+      CREATE INDEX IF NOT EXISTS idx_delegations_intention ON delegations(intention_id);
     `);
   }
 
@@ -1525,6 +1545,104 @@ export class ConsciousnessMemory {
       executed: rows.filter(r => r.executed).length,
       byParameter,
       byPattern,
+    };
+  }
+
+  // ─── Delegation Operations (Hermes mind→body audit) ─────────────
+
+  /**
+   * Persist a freshly-dispatched delegation (Condition 1: Audit Trail Symmetry).
+   * Written at dispatch time with status 'pending'; updated on resolution.
+   */
+  recordDelegation(record: DelegationRecord): void {
+    this.db.prepare(`
+      INSERT INTO delegations
+        (delegation_id, intention_id, tick, goal, bounds, dharma_fitness, dharma_threshold,
+         status, delegated_at, resolved_at, hermes_ref, result_summary, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(delegation_id) DO NOTHING
+    `).run(
+      record.delegationId, record.intentionId, record.tick, record.goal,
+      JSON.stringify(record.bounds), record.dharmaFitness, record.dharmaThreshold,
+      record.status, record.delegatedAt, record.resolvedAt,
+      record.hermesRef, record.resultSummary, record.error,
+    );
+  }
+
+  /**
+   * Update a delegation's terminal state. Preserves the full error verbatim
+   * (Condition 4: Failure Transparency).
+   */
+  updateDelegation(delegationId: string, updates: {
+    status?: DelegationStatus;
+    resolvedAt?: number | null;
+    hermesRef?: string | null;
+    resultSummary?: string | null;
+    error?: string | null;
+  }): void {
+    const parts: string[] = [];
+    const params: unknown[] = [];
+    if (updates.status !== undefined) { parts.push('status = ?'); params.push(updates.status); }
+    if (updates.resolvedAt !== undefined) { parts.push('resolved_at = ?'); params.push(updates.resolvedAt); }
+    if (updates.hermesRef !== undefined) { parts.push('hermes_ref = ?'); params.push(updates.hermesRef); }
+    if (updates.resultSummary !== undefined) { parts.push('result_summary = ?'); params.push(updates.resultSummary); }
+    if (updates.error !== undefined) { parts.push('error = ?'); params.push(updates.error); }
+    if (parts.length === 0) return;
+    params.push(delegationId);
+    this.db.prepare(`UPDATE delegations SET ${parts.join(', ')} WHERE delegation_id = ?`).run(...params);
+  }
+
+  getDelegation(delegationId: string): DelegationRecord | null {
+    const row = this.db.prepare('SELECT * FROM delegations WHERE delegation_id = ?').get(delegationId) as any;
+    return row ? this.rowToDelegation(row) : null;
+  }
+
+  getRecentDelegations(limit: number = 50): DelegationRecord[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM delegations ORDER BY delegated_at DESC LIMIT ?'
+    ).all(limit) as any[];
+    return rows.map(r => this.rowToDelegation(r));
+  }
+
+  getDelegationStats(): {
+    total: number; pending: number; succeeded: number; failed: number; timeout: number;
+  } {
+    const rows = this.db.prepare(
+      'SELECT status, COUNT(*) as count FROM delegations GROUP BY status'
+    ).all() as Array<{ status: string; count: number }>;
+    const byStatus: Record<string, number> = {};
+    let total = 0;
+    for (const r of rows) { byStatus[r.status] = r.count; total += r.count; }
+    return {
+      total,
+      pending: byStatus['pending'] ?? 0,
+      succeeded: byStatus['succeeded'] ?? 0,
+      failed: byStatus['failed'] ?? 0,
+      timeout: byStatus['timeout'] ?? 0,
+    };
+  }
+
+  private rowToDelegation(r: any): DelegationRecord {
+    let bounds: DelegationRecord['bounds'];
+    try {
+      bounds = JSON.parse(r.bounds || '{}');
+    } catch {
+      bounds = { timeLimitMs: 0, successCriteria: '' };
+    }
+    return {
+      delegationId: r.delegation_id,
+      intentionId: r.intention_id,
+      tick: r.tick,
+      goal: r.goal,
+      bounds,
+      dharmaFitness: r.dharma_fitness,
+      dharmaThreshold: r.dharma_threshold,
+      status: r.status as DelegationStatus,
+      delegatedAt: r.delegated_at,
+      resolvedAt: r.resolved_at,
+      hermesRef: r.hermes_ref,
+      resultSummary: r.result_summary,
+      error: r.error,
     };
   }
 

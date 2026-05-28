@@ -1,0 +1,197 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Hermes Overlay Data Plane — agentgateway standalone config
+# ─────────────────────────────────────────────────────────────────────────────
+# Role: agentgateway is the OVERLAY DATA PLANE that bridges the stdio-only Hermes
+# MCP server (and other federated MCP servers) into a stable HTTP / SSE /
+# Streamable HTTP endpoint the consciousness-gateway consumes over plain HTTP.
+#
+# IMPORTANT — separation of concerns:
+#   * agentgateway = TRANSPORT + GOVERNANCE only. It manages child-process
+#     lifecycles, multiplexes tools, enforces transport-level auth/rate limits.
+#     It makes NO agentic decisions.
+#   * consciousness-gateway = MIND. All dharma / ego / entropy / compassion
+#     gating stays upstream. agentgateway never decides what to run.
+#
+# Run:  agentgateway -f /etc/agentgateway/config.yaml
+# Docs: https://agentgateway.dev/docs/standalone/latest/configuration/overview/
+#
+# NOTE: target names MUST NOT contain underscores. Tools are exposed to the
+# upstream namespaced by target name (e.g. hermes_messages_send, git_status).
+
+# ── Observability (Kern's visibility asks) ────────────────────────────────────
+# Prometheus metrics are on by default at /metrics on statsAddr (default :15020).
+# They give tool-call counts by target/tool, request-latency histograms (→ p50/
+# p95/p99 via histogram_quantile), and active-connection counts. Traces (OTLP)
+# carry mcp.method + mcp.session_id for session-lifecycle visibility.
+config:
+  statsAddr: "0.0.0.0:15020"        # scrape http://agentgateway:15020/metrics
+  logging:
+    level: "info,mcp=debug"
+    format: json                     # structured logs → easy to ship/parse
+  tracing:
+    otlpEndpoint: http://jaeger:4317 # session lifecycle + per-call spans
+    randomSampling: true             # sample everything in sandbox; tune in prod
+
+# Enrich every access-log line with the tool + session so failure rates and
+# session lifecycle can be sliced per namespace alongside the metrics.
+frontendPolicies:
+  accessLog:
+    add:
+      tool: 'mcp.tool'
+      session: 'mcp.session_id'
+
+binds:
+# ── Data-plane port: the consciousness-gateway points HERMES_MCP_URL here ──────
+- port: 3000
+  listeners:
+  - name: mcp-listener
+    protocol: HTTP
+    routes:
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ROUTE 1 — Federated MCP surface (Streamable HTTP + SSE) at /mcp
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: mcp-federation
+      matches:
+      - path:
+          type: PathPrefix
+          value: /mcp
+      policies:
+        # CORS is required for browser/MCP clients to read the session header.
+        cors:
+          allowOrigins: ["*"]
+          allowHeaders:
+          - mcp-protocol-version
+          - content-type
+          - cache-control
+          - authorization
+          exposeHeaders:
+          - "Mcp-Session-Id"
+
+        # ── AUTHENTICATION — Policy Enforcement Point (hybrid sandbox→prod) ───
+        # SANDBOX MODEL (active): NO inbound validation — loopback / compose-net
+        # trust only. The consciousness-gateway still attaches its static
+        # `Authorization: Bearer ${HERMES_AUTH_TOKEN}`, but it rides along
+        # UNVALIDATED here, which is enough to exercise the session-pinning
+        # patch. SAFE ONLY while port 3000 is bound to localhost / the private
+        # compose network — do NOT expose it publicly in sandbox mode.
+        #
+        # PRODUCTION MODEL (uncomment when the Mac mini is reachable beyond
+        # localhost): agentgateway becomes the PEP — it validates a short-lived
+        # asymmetric JWT via JWKS, then applies coarse RBAC before any stdio
+        # tool is touched. authN lives here; fine dharma/ego/entropy authZ
+        # stays upstream in the consciousness-gateway.
+        #
+        # jwtAuth:
+        #   issuer: consciousness-gateway
+        #   audiences: [agentgateway]
+        #   jwks:
+        #     file: /etc/agentgateway/jwks.json          # local public key/JWKS
+        #     # — or a remote IdP (Keycloak / Auth0 / Hydra): —
+        #     # url: https://auth.internal/.well-known/jwks.json
+        # mcpAuthorization:
+        #   rules:
+        #   # Coarse gate: only an orchestrator identity may reach the body.
+        #   - 'has(jwt.roles) && "agent-orchestrator" in jwt.roles'
+        #   # (Optional) pin Hermes tools to the gateway's own subject:
+        #   # - 'jwt.sub == "consciousness-gateway" && mcp.tool.name.startsWith("hermes_")'
+        #   # Phase-1 read-only allow-list (defense-in-depth; tool-name only):
+        #   - 'mcp.tool.name in ["git_status","git_log","git_diff","git_show","filesystem_read_file","filesystem_list_directory","fetch_fetch","time_get_current_time"]'
+        #
+        # NOTE: for a *validated* static credential in sandbox (rather than
+        # loopback trust), agentgateway also ships an `apiKey` policy — see the
+        # agentgateway.dev policies docs for its exact field shape.
+
+        # ── Optional: rate-limit the body so a runaway loop can't flood tools ──
+        # localRateLimit:
+        # - maxTokens: 60
+        #   tokensPerFill: 60
+        #   fillInterval: 60s
+        #   type: requests
+
+      backends:
+      - mcp:
+          targets:
+
+          # ── Hermes messaging bridge (the stdio child process) ──────────────
+          # agentgateway spawns `hermes mcp serve` and owns its lifecycle.
+          # Exposes: hermes_messages_send, hermes_events_poll, hermes_events_wait,
+          #          hermes_conversations_list, hermes_channels_list, ...
+          - name: hermes
+            stdio:
+              cmd: hermes
+              args: ["mcp", "serve"]
+              # env is passed to the spawned process. If your agentgateway build
+              # rejects `env` here, set these on the container instead (compose).
+              env:
+                HOME: /home/hermes
+                HERMES_CONFIG: /home/hermes/.hermes/config.yaml
+                # Downstream secret injected via process env — NOT an HTTP header.
+                # stdio children cannot read HTTP auth, so trust is container-bound
+                # (implicit-trust hop). If your build doesn't interpolate ${...},
+                # set the literal on the container env in docker-compose instead.
+                HERMES_AUTH_TOKEN: "${HERMES_INTERNAL_SECRET}"
+
+          # ── PHASE 1 — read-leaning federation (Kern-approved) ──────────────
+          # Each target widens the Gateway's "body" with a vetted toolset; the
+          # consciousness-gateway dharma-gates every tool by namespace. These
+          # serve the hungry drives: fetch → `learn`, git → `create`/`ship`,
+          # filesystem + time → foundational utilities.
+          # NOTE: the filesystem/git servers DO expose write tools; Phase-1
+          # read-only posture is enforced two ways below — (a) /workspace is
+          # mounted read-only in docker-compose, and (b) the optional
+          # mcpAuthorization allow-list (see route policies) can pin tool names.
+          - name: filesystem
+            stdio:
+              cmd: npx
+              args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+
+          - name: git
+            stdio:
+              cmd: uvx
+              args: ["mcp-server-git", "--repository", "/workspace"]
+
+          - name: fetch
+            stdio:
+              cmd: uvx
+              args: ["mcp-server-fetch"]
+
+          - name: time
+            stdio:
+              cmd: uvx
+              args: ["mcp-server-time"]
+
+          # ── PHASE 2 — held until the read-only set is verified ─────────────
+          # github is write-capable and needs a PAT. Kern's call: do not expose
+          # until Phase 1 latency/failure numbers are in. Uncomment + supply
+          # GITHUB_TOKEN to promote.
+          # - name: github
+          #   stdio:
+          #     cmd: npx
+          #     args: ["-y", "@modelcontextprotocol/server-github"]
+          #     env:
+          #       GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ROUTE 2 — A2A (Agent-to-Agent) — FUTURE async goal delegation "down the wire"
+    # ─────────────────────────────────────────────────────────────────────────
+    # The embedded `hermes mcp serve` is NOT an A2A endpoint, so this is stubbed.
+    # Once a Hermes *agent* exposes an A2A card (or you run an A2A shim that turns
+    # a goal into a Hermes task), uncomment and point the a2a backend at it. Then
+    # the consciousness-gateway can delegate bounded goals asynchronously via A2A
+    # task collaboration instead of the messages_send → events_poll relay.
+    #
+    # - name: a2a-delegation
+    #   matches:
+    #   - path:
+    #       type: PathPrefix
+    #       value: /a2a
+    #   backends:
+    #   - a2a:
+    #       host: hermes-a2a:9100      # an A2A-capable Hermes agent endpoint
+
+# ── Admin / UI / metrics ──────────────────────────────────────────────────────
+# agentgateway serves an admin UI + stats (default localhost:15000 — confirm on
+# your build with `agentgateway --help`). Exposed in docker-compose for tracing.

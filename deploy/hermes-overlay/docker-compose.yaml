@@ -1,0 +1,110 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Local sandbox: consciousness-gateway (upstream) → agentgateway (overlay) → Hermes
+# ─────────────────────────────────────────────────────────────────────────────
+# Three logical services as requested:
+#   1. agentgateway       — official binary + bundled Hermes runtime (overlay).
+#   2. hermes-mcp-env      — NOT a long-running service: Hermes is spawned per
+#                            connection by agentgateway INSIDE its container.
+#                            Represented here by the shared volumes + build args
+#                            (stdio is process-local; it cannot be a peer container).
+#   3. consciousness-gateway — stubbed upstream that exercises the HTTP surface.
+#
+# Bring up:   docker compose up --build
+# Tear down:  docker compose down -v
+
+name: hermes-overlay
+
+services:
+
+  # ── 1. agentgateway overlay (bundles Hermes + npx/uvx MCP servers) ──────────
+  agentgateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hermes-overlay/agentgateway:local
+    container_name: agentgateway
+    restart: unless-stopped
+    command: ["-f", "/etc/agentgateway/config.yaml"]
+    ports:
+      - "3000:3000"     # MCP data plane (Streamable HTTP + SSE) → /mcp
+      - "15000:15000"   # admin UI (confirm port via `agentgateway --help`)
+      - "15020:15020"   # Prometheus metrics → /metrics
+    environment:
+      RUST_LOG: "info,agentgateway=debug,mcp=debug"   # verbose transport tracing
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"               # Phase 2 only
+      HERMES_INTERNAL_SECRET: "${HERMES_INTERNAL_SECRET:-sandbox-internal}"
+    volumes:
+      - ./agentgateway.yaml:/etc/agentgateway/config.yaml:ro
+      # Hermes session store (~/.hermes). Pre-seed config.yaml + a registered
+      # agent/channel here so messages_send has somewhere to land.
+      - hermes-home:/home/hermes/.hermes
+      # Phase-1 read-only posture: /workspace is mounted READ-ONLY so the
+      # filesystem/git targets cannot mutate the tree even if write tools fire.
+      - ./workspace:/workspace:ro
+    healthcheck:
+      # MCP initialize over Streamable HTTP — proves the data plane is live.
+      test: ["CMD", "sh", "-c",
+        "curl -fsS -X POST http://localhost:3000/mcp \
+          -H 'Content-Type: application/json' \
+          -H 'Accept: application/json, text/event-stream' \
+          -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"healthcheck\",\"version\":\"0\"}}}' \
+          >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── 3. consciousness-gateway (stubbed upstream) ─────────────────────────────
+  # In production this is the real TypeScript gateway with:
+  #     HERMES_MCP_URL=http://agentgateway:3000/mcp
+  # Its existing HTTP HermesBridge then works unchanged — no stdio handling.
+  # Here we stub it as a probe that discovers + calls a tool through the overlay.
+  consciousness-gateway:
+    image: curlimages/curl:8.11.0
+    container_name: consciousness-gateway
+    depends_on:
+      agentgateway:
+        condition: service_healthy
+    environment:
+      HERMES_MCP_URL: "http://agentgateway:3000/mcp"
+    volumes:
+      - ./upstream-probe.sh:/upstream-probe.sh:ro
+    entrypoint: ["sh", "/upstream-probe.sh"]
+
+  # ── Observability stack (Kern's visibility asks) ────────────────────────────
+  # Prometheus scrapes agentgateway :15020/metrics → counts by namespace,
+  # latency histograms (p50/p95/p99 via histogram_quantile), failure rates.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    depends_on: [agentgateway]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  # Jaeger receives OTLP traces (mcp.method, mcp.session_id) → session lifecycle
+  # (created / expired / orphaned) and per-call spans.
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    container_name: jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC (agentgateway tracing.otlpEndpoint)
+
+  # Grafana for the latency-distribution / failure-rate dashboards Kern wants.
+  grafana:
+    image: grafana/grafana:11.5.0
+    container_name: grafana
+    depends_on: [prometheus]
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+
+volumes:
+  hermes-home:

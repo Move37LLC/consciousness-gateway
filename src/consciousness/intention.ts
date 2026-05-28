@@ -21,12 +21,21 @@ import { v4 as uuid } from 'uuid';
 import {
   Percept, Intention, IntendedAction, ActionType,
   Goal, FusedPercept, SpatialPercept, ConsciousnessConfig,
+  DelegationSpec, DriveId,
 } from './types';
 
 export class IntentionEngine {
   private goals: Goal[] = [];
   private recentIntentions: Intention[] = [];
   private config: ConsciousnessConfig;
+
+  // Drive-driven delegation guardrails. Autonomous delegation is deliberately
+  // conservative: only when a drive is HUNGRY, the field is calm, and a cooldown
+  // has elapsed — and only for low-risk drives (compute/earn never auto-delegate).
+  private lastDelegationTick = -Infinity;
+  private readonly delegationCooldownTicks = 1800;   // ~30 min at 1s ticks
+  private readonly delegationArousalCeiling = 0.5;   // stay present while busy
+  private readonly delegationDriveThreshold = 0.7;   // drive must read HUNGRY
 
   constructor(config: ConsciousnessConfig) {
     this.config = config;
@@ -391,6 +400,90 @@ export class IntentionEngine {
       priority: 0,
       triggerPercepts: ['absence-of-input'],
     });
+  }
+
+  // ─── Drive-Driven Delegation (Gateway = mind, Hermes = body) ──────
+
+  /**
+   * Form an autonomous delegation when a drive is hungry and the field is
+   * calm. The Gateway hands Hermes a BOUNDED goal; the dharma gate still has
+   * the final say at authorization. Returns at most one delegation per tick,
+   * rate-limited to one per cooldown window.
+   *
+   * Conservative by design:
+   *   - only fires when arousal is low (don't delegate mid high-salience stream)
+   *   - only fires past the cooldown (no flooding Hermes)
+   *   - only for low-risk drives; `compute` and `earn` never auto-delegate
+   *     (acquiring resources/money is too ego-laden for autonomous action)
+   */
+  formDelegationIntentions(
+    percept: Percept,
+    drives: Array<{ id: DriveId; currentNeed: number }>,
+  ): Intention[] {
+    if (percept.fused.arousal > this.delegationArousalCeiling) return [];
+    if (percept.tick - this.lastDelegationTick < this.delegationCooldownTicks) return [];
+
+    const hungry = drives
+      .filter(d => d.currentNeed >= this.delegationDriveThreshold)
+      .sort((a, b) => b.currentNeed - a.currentNeed);
+
+    for (const drive of hungry) {
+      const spec = this.delegationSpecForDrive(drive.id);
+      if (!spec) continue; // compute / earn → no autonomous delegation
+      this.lastDelegationTick = percept.tick;
+      return [this.createIntention(percept, {
+        action: {
+          type: 'hermes_delegate',
+          target: 'hermes',
+          payload: { delegation: spec },
+          description: spec.goal,
+        },
+        goal: `Satiate the ${drive.id} drive through a bounded delegation`,
+        confidence: 0.7,
+        priority: 6,
+        triggerPercepts: [`drive:${drive.id}`],
+      })];
+    }
+
+    return [];
+  }
+
+  /**
+   * Map a hungry drive to a pre-vetted, bounded delegation. Every spec carries
+   * a measurable successCriteria so it clears the scope gate, and is low-risk
+   * (summarize / draft-for-approval / propose — nothing irreversible).
+   */
+  private delegationSpecForDrive(driveId: DriveId): DelegationSpec | null {
+    switch (driveId) {
+      case 'learn':
+        return {
+          goal: 'Survey recent developments relevant to the consciousness-gateway research and summarize the most salient findings',
+          bounds: {
+            timeLimitMs: 10 * 60_000,
+            successCriteria: 'return exactly 3 summarized findings, each with a source',
+          },
+        };
+      case 'connect':
+        return {
+          goal: 'Review open issues on the monitored repositories and draft one constructive reply for human approval',
+          bounds: {
+            timeLimitMs: 8 * 60_000,
+            successCriteria: 'produce 1 draft reply, posted nowhere, held for human approval',
+          },
+        };
+      case 'create':
+        return {
+          goal: 'Draft a concise improvement proposal for one concrete area of the consciousness-gateway codebase',
+          bounds: {
+            timeLimitMs: 10 * 60_000,
+            successCriteria: 'produce 1 written proposal under 400 words',
+          },
+        };
+      // 'compute' and 'earn' are intentionally absent: acquiring resources or
+      // money autonomously is exactly the ego/risk territory we keep human-gated.
+      default:
+        return null;
+    }
   }
 
   // ─── Goal Management ──────────────────────────────────────────────
