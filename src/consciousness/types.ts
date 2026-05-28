@@ -166,7 +166,9 @@ export interface Goal {
 // ─── Dopamine / Reward System ────────────────────────────────────────
 
 export type RewardType =
-  | 'revenue'          // Money earned (payments, subscriptions, sales)
+  | 'revenue'          // REAL money earned (live payments, subscriptions, sales, live trades)
+  | 'sim_revenue'      // Simulated/paper P&L — NOT real income. Tagged distinctly so the
+                       // earn drive is never satiated by money that doesn't exist.
   | 'compute'          // Server resources acquired (new instances, upgrades, GPU time)
   | 'creation'         // Something built (feature shipped, code deployed, document written)
   | 'research'         // Knowledge gained (paper progress, model validated, insight)

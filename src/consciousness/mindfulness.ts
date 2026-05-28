@@ -358,12 +358,16 @@ export class MindfulnessLoop {
     }
 
     // Only flag misalignment when there IS context showing paper/sim activity,
-    // not just because text is empty (empty text = no activity = no misalignment)
+    // not just because text is empty (empty text = no activity = no misalignment).
+    // Strip the 'sim_revenue' reward-type token first so its 'revenue'
+    // substring does not masquerade as real-income context — paper P&L must
+    // never read as real revenue here.
+    const realRevenueText = recentText.replace(/sim_revenue/g, 'sim_pnl');
     const hasRevenueContext =
-      recentText.includes('revenue') ||
-      recentText.includes('payment') ||
-      recentText.includes('client') ||
-      recentText.includes('subscription');
+      realRevenueText.includes('revenue') ||
+      realRevenueText.includes('payment') ||
+      realRevenueText.includes('client') ||
+      realRevenueText.includes('subscription');
     const isPaperTrading =
       recentText.includes('paper') ||
       recentText.includes('simulation') ||

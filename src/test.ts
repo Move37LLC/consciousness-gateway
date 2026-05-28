@@ -18,6 +18,8 @@ import { ActionExecutor } from './consciousness/action';
 import { ConsciousnessMemory } from './consciousness/memory';
 import { HermesBridge } from './agents/providers/hermes';
 import { NoSelfRegularizer } from './dharma/no-self';
+import { DopamineSystem } from './consciousness/dopamine';
+import { detectTradeMode } from './consciousness/monitors/trading';
 import { Message } from './core/types';
 import { Percept, FusedPercept, SpatialPercept, DEFAULT_CONSCIOUSNESS_CONFIG, Intention } from './consciousness/types';
 import { v4 as uuid } from 'uuid';
@@ -623,6 +625,38 @@ async function test() {
     check('Status carries name', hermesStatus.name === 'hermes');
     check('Status reflects unconfigured state', hermesStatus.configured === false || hermesStatus.configured === true);
   }
+
+  // ── Test 21: Paper vs real revenue distinction ────────────────
+  section('Test 21: Paper/live P&L tagging and reward routing');
+
+  // detectTradeMode classification
+  check('Explicit live flag → live', detectTradeMode({ live: true }) === 'live');
+  check('mode:"live" → live', detectTradeMode({ mode: 'live' }) === 'live');
+  check('paper:false → live', detectTradeMode({ paper: false }) === 'live');
+  check('account:"live" → live', detectTradeMode({ account: 'live' }) === 'live');
+  check('Explicit paper flag → paper', detectTradeMode({ paper: true }) === 'paper');
+  check('mode:"simulation" → paper', detectTradeMode({ mode: 'simulation' }) === 'paper');
+  check('Unmarked event → paper (reality-first default)', detectTradeMode({ symbol: 'BTC', pnl: 42 }) === 'paper');
+
+  // Reward routing: real revenue satiates earn; sim_revenue does not.
+  const dopaDbPath = path.join(process.cwd(), 'data', `test-dopamine-${Date.now()}.db`);
+  try { fs.unlinkSync(dopaDbPath); } catch {}
+  const dopaMem = new ConsciousnessMemory(dopaDbPath);
+  const dopa = new DopamineSystem(dopaMem);
+
+  const earnBefore = dopa.getDrives().find(d => d.id === 'earn')!.currentNeed;
+  // Simulated win — should NOT reduce the earn drive's need.
+  dopa.processReward(1, 'sim_revenue', 100, 'Paper win', 'trading-monitor', { simulated: true });
+  const earnAfterSim = dopa.getDrives().find(d => d.id === 'earn')!.currentNeed;
+  check('sim_revenue does NOT satiate the earn drive', earnAfterSim === earnBefore);
+
+  // Real win — SHOULD reduce the earn drive's need.
+  dopa.processReward(2, 'revenue', 100, 'Real income', 'manual', { simulated: false });
+  const earnAfterReal = dopa.getDrives().find(d => d.id === 'earn')!.currentNeed;
+  check('real revenue DOES satiate the earn drive', earnAfterReal < earnBefore);
+
+  dopaMem.close();
+  try { fs.unlinkSync(dopaDbPath); } catch { /* best effort */ }
 
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');

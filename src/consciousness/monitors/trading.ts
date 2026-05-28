@@ -14,6 +14,39 @@
 
 import { MonitorPlugin, SpatialPercept } from '../types';
 
+export type TradeMode = 'live' | 'paper';
+
+/**
+ * Determine whether a trading event reflects REAL money or simulated/paper
+ * P&L. gateway-trading may mark this in several ways depending on version,
+ * so we check a range of conventional fields.
+ *
+ * Reality-first default: when the mode is NOT explicitly marked live, we
+ * treat it as PAPER. We never credit the Gateway's real Revenue Drive with
+ * income we cannot prove is real. A trade is only "live" if it says so.
+ */
+export function detectTradeMode(data: Record<string, unknown>): TradeMode {
+  const mode = typeof data.mode === 'string' ? data.mode.toLowerCase() : '';
+  const account = typeof data.account === 'string' ? data.account.toLowerCase()
+    : typeof data.account_type === 'string' ? (data.account_type as string).toLowerCase()
+    : '';
+
+  // Explicit LIVE markers.
+  if (
+    data.live === true ||
+    data.real === true ||
+    data.paper === false ||
+    data.simulated === false ||
+    mode === 'live' || mode === 'real' || mode === 'production' ||
+    account === 'live' || account === 'real'
+  ) {
+    return 'live';
+  }
+
+  // Everything else — explicit paper markers OR unmarked — is treated as paper.
+  return 'paper';
+}
+
 interface TradingEvent {
   id: string;
   type: 'scan' | 'opportunity' | 'trade' | 'exit' | 'status';
@@ -223,6 +256,7 @@ export class TradingMonitor implements MonitorPlugin {
   }
 
   private eventToPercept(event: TradingEvent): SpatialPercept {
+    const tradeMode = detectTradeMode(event.data);
     return {
       source: `trading:${event.type}`,
       channel: 'trading',
@@ -230,6 +264,10 @@ export class TradingMonitor implements MonitorPlugin {
         eventId: event.id,
         eventType: event.type,
         ...event.data,
+        // Authoritative paper/live tag — downstream reward logic relies on
+        // this rather than re-sniffing raw fields, so it can't drift.
+        tradeMode,
+        simulated: tradeMode === 'paper',
       },
       salience: this.calculateSalience(event),
       features: this.extractFeatures(event),

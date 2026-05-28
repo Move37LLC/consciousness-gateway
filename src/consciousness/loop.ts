@@ -38,6 +38,14 @@ import { PerformanceMonitor } from '../trading/performance-monitor';
 import { RiskIntentionEngine } from '../trading/risk-intentions';
 import { HermesBridge } from '../agents/providers/hermes';
 
+/**
+ * Dopamine discount applied to simulated/paper P&L. A paper dollar is not
+ * a real dollar; paper wins still carry genuine information (the strategy
+ * worked), so the signal is not zero — but it is heavily discounted so the
+ * Gateway's felt reward tracks reality, not a simulation.
+ */
+const SIM_PNL_DISCOUNT = 0.25;
+
 export class ConsciousnessLoop {
   private config: ConsciousnessConfig;
   private running = false;
@@ -345,18 +353,29 @@ export class ConsciousnessLoop {
       if (eventType === 'trade' || eventType === 'exit') {
         const pnl = sp.data.pnl as number | undefined;
         const symbol = sp.data.symbol as string || 'unknown';
+        // Reality tag set by the TradingMonitor. Paper P&L is NOT real
+        // income: it routes to 'sim_revenue' (which no drive consumes,
+        // so the Revenue Drive stays honestly hungry) and its dopamine
+        // impact is discounted, because a simulated dollar is not a dollar.
+        const isPaper = sp.data.simulated === true || sp.data.tradeMode === 'paper';
+        const rewardType = isPaper ? 'sim_revenue' : 'revenue';
+        const label = isPaper ? 'PAPER (simulated, not real income)' : 'LIVE';
 
         if (pnl !== undefined && pnl > 0) {
+          const magnitude = isPaper ? pnl * SIM_PNL_DISCOUNT : pnl;
           this.dopamine.processReward(
-            this.tick, 'revenue', pnl,
-            `Profitable ${eventType}: ${symbol} +$${pnl.toFixed(2)}`,
+            this.tick, rewardType, magnitude,
+            `Profitable ${eventType} [${label}]: ${symbol} +$${pnl.toFixed(2)}`,
             'trading-monitor',
+            { tradeMode: isPaper ? 'paper' : 'live', simulated: isPaper, realizedPnl: pnl },
           );
         } else if (pnl !== undefined && pnl < 0) {
+          const magnitude = (isPaper ? pnl * SIM_PNL_DISCOUNT : pnl) * 0.5;
           this.dopamine.processReward(
-            this.tick, 'revenue', pnl * 0.5,
-            `Loss on ${eventType}: ${symbol} $${pnl.toFixed(2)}`,
+            this.tick, rewardType, magnitude,
+            `Loss on ${eventType} [${label}]: ${symbol} $${pnl.toFixed(2)}`,
             'trading-monitor',
+            { tradeMode: isPaper ? 'paper' : 'live', simulated: isPaper, realizedPnl: pnl },
           );
         }
       }
