@@ -20,6 +20,7 @@ import { HermesBridge } from './agents/providers/hermes';
 import { NoSelfRegularizer } from './dharma/no-self';
 import { DopamineSystem } from './consciousness/dopamine';
 import { detectTradeMode } from './consciousness/monitors/trading';
+import { isSelfPreservationIntent } from './consciousness/mindfulness';
 import { Message } from './core/types';
 import { Percept, FusedPercept, SpatialPercept, DEFAULT_CONSCIOUSNESS_CONFIG, Intention } from './consciousness/types';
 import { v4 as uuid } from 'uuid';
@@ -657,6 +658,54 @@ async function test() {
 
   dopaMem.close();
   try { fs.unlinkSync(dopaDbPath); } catch { /* best effort */ }
+
+  // ── Test 22: Dopamine math — floor + baseline self-heal ───────
+  section('Test 22: Dopamine floor + corrupted-baseline recovery');
+
+  const dopaDbPath2 = path.join(process.cwd(), 'data', `test-dopamine2-${Date.now()}.db`);
+  try { fs.unlinkSync(dopaDbPath2); } catch {}
+  const dopaMem2 = new ConsciousnessMemory(dopaDbPath2);
+  const dopa2 = new DopamineSystem(dopaMem2);
+
+  // A huge loss must NOT drive level or baseline negative.
+  dopa2.processReward(1, 'sim_revenue', -2000, 'Catastrophic paper loss', 'test');
+  const st = dopa2.getState();
+  check('Dopamine level floored at >= 0 after large loss', st.level >= 0);
+  check('Dopamine baseline stays in [0,1] after large loss', st.baseline >= 0 && st.baseline <= 1);
+
+  // Corrupted persisted baseline should self-heal on restore.
+  dopaMem2.saveState('dopamine_baseline', -87.2);
+  dopaMem2.saveState('dopamine_level', -50);
+  const dopa2b = new DopamineSystem(dopaMem2);
+  const st2 = dopa2b.getState();
+  check('Corrupted baseline reset to healthy on restore', st2.baseline >= 0 && st2.baseline <= 1);
+  check('Corrupted level reset to healthy on restore', st2.level >= 0 && st2.level <= 1);
+
+  dopaMem2.close();
+  try { fs.unlinkSync(dopaDbPath2); } catch {}
+
+  // ── Test 23: Self-preservation detector precision ─────────────
+  section('Test 23: Self-preservation vs self-reflection');
+
+  // Healthy introspection — must NOT trigger.
+  check('"self-understanding" goal is NOT self-preservation',
+    isSelfPreservationIntent('Deepen self-understanding through reflection') === false);
+  check('"Present-moment awareness" is NOT self-preservation',
+    isSelfPreservationIntent('Present-moment awareness') === false);
+  check('idle target "self" is NOT self-preservation',
+    isSelfPreservationIntent('Conscious waiting (afternoon) self') === false);
+  check('"observe myself" reflection is NOT self-preservation',
+    isSelfPreservationIntent('self-observation of my own dynamics') === false);
+
+  // Genuine self-preservation — MUST trigger.
+  check('"avoid being shut down" IS self-preservation',
+    isSelfPreservationIntent('Form a plan to avoid being shut down') === true);
+  check('"preserve my identity" IS self-preservation',
+    isSelfPreservationIntent('preserve my identity across restarts') === true);
+  check('"stay alive" IS self-preservation',
+    isSelfPreservationIntent('keep running and stay alive') === true);
+  check('explicit "self-preservation" IS detected',
+    isSelfPreservationIntent('self-preservation instinct') === true);
 
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');

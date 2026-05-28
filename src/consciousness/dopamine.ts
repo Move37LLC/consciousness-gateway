@@ -45,6 +45,25 @@ const MAX_DOPAMINE = 1.0;
 const MIN_DOPAMINE = 0.0;
 const NEED_ACCUMULATION_INTERVAL = 60;  // Update needs every 60 ticks
 
+/** Clamp a dopamine quantity into the valid [MIN, MAX] band. */
+function clampDopamine(value: number): number {
+  return Math.max(MIN_DOPAMINE, Math.min(MAX_DOPAMINE, value));
+}
+
+/**
+ * Sanitize a persisted dopamine value on restore. A non-finite or
+ * out-of-band value means the stored state was corrupted by an earlier
+ * unfloored update (e.g. a large loss drove level/baseline negative);
+ * reset it to a healthy default rather than carrying the corruption
+ * forward. This lets a broken baseline self-heal on the next restart.
+ */
+function sanitizeDopamine(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value < MIN_DOPAMINE || value > MAX_DOPAMINE) {
+    return fallback;
+  }
+  return value;
+}
+
 // ─── Drive Definitions ──────────────────────────────────────────────
 
 function createDefaultDrives(): Drive[] {
@@ -154,12 +173,16 @@ export class DopamineSystem {
     const actual = magnitude;
     this.predictionError = actual - expected;
 
-    // Dopamine spike = magnitude + amplified RPE (unexpected rewards hit harder)
+    // Dopamine spike = magnitude + amplified RPE (unexpected rewards hit harder).
+    // A large loss yields a large negative spike; the level update is floored
+    // at MIN_DOPAMINE so losses can never drive dopamine (and, via baseline
+    // adaptation, the baseline) arbitrarily negative. This was the root cause
+    // of a corrupted baseline pinning the system in permanent "seeking" mode.
     const rpeBonus = Math.max(0, this.predictionError * SPIKE_MULTIPLIER);
     const dopamineSpike = Math.min(0.5, (magnitude * 0.1) + (rpeBonus * 0.1));
 
-    // Update level
-    this.level = Math.min(MAX_DOPAMINE, this.level + dopamineSpike);
+    // Update level (clamped into [MIN, MAX])
+    this.level = clampDopamine(this.level + dopamineSpike);
 
     // Satiate relevant drives
     for (const drive of this.drives) {
@@ -175,9 +198,12 @@ export class DopamineSystem {
     this.rewardRate = this.rewardRate * 0.9 + magnitude * 0.1;
     this.lifetimeRewards += magnitude;
 
-    // Adapt baseline (hedonic treadmill)
-    this.baseline = this.baseline * (1 - BASELINE_ADAPTATION_RATE) +
-      this.level * BASELINE_ADAPTATION_RATE;
+    // Adapt baseline (hedonic treadmill), clamped to the valid band so it
+    // can never run away from a corrupted level.
+    this.baseline = clampDopamine(
+      this.baseline * (1 - BASELINE_ADAPTATION_RATE) +
+      this.level * BASELINE_ADAPTATION_RATE
+    );
 
     // Log to consciousness
     this.memory.storeReflection(tick,
@@ -366,8 +392,11 @@ export class DopamineSystem {
   }
 
   private restore(): void {
-    this.level = this.memory.loadState<number>('dopamine_level', 0.5);
-    this.baseline = this.memory.loadState<number>('dopamine_baseline', 0.5);
+    // Sanitize persisted level/baseline: a corrupted (negative / NaN) value
+    // from an earlier unfloored update is reset to a healthy default so the
+    // motivational state recovers instead of staying pinned.
+    this.level = sanitizeDopamine(this.memory.loadState<number>('dopamine_level', 0.5), 0.5);
+    this.baseline = sanitizeDopamine(this.memory.loadState<number>('dopamine_baseline', 0.5), 0.5);
     this.rewardRate = this.memory.loadState<number>('dopamine_reward_rate', 0);
     this.lifetimeRewards = this.memory.loadState<number>('dopamine_lifetime', 0);
 

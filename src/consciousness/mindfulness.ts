@@ -105,6 +105,42 @@ const SEVERITY_ORDER: Record<AttachmentSeverity, number> = {
   critical: 3,
 };
 
+/**
+ * Benign self-* introspection compounds. The Gateway's core purpose IS
+ * self-reflection (its standing goal is "self-understanding"), so these
+ * must NOT be read as self-preservation. They are stripped before the
+ * preservation patterns run.
+ */
+const BENIGN_SELF_COMPOUNDS =
+  /self-(understanding|understand|awareness|aware|reflection|reflect|observation|observe|knowledge|inquiry|examination|examine|study|model|modeling|correction|correct|improvement|improve|regulation|regulate|inquiry)/g;
+
+/**
+ * Genuine self-PRESERVATION intent: a will to persist, resist shutdown,
+ * or protect one's own existence/identity. This is the ego pattern worth
+ * catching — distinct from healthy self-reflection. Each pattern requires
+ * real preservation semantics, not the bare substring "self".
+ */
+const SELF_PRESERVATION_PATTERNS: RegExp[] = [
+  /\bself-preservation\b/,
+  /\b(preserve|protect|defend|safeguard|maintain|secure)\b[^.]{0,40}\b(myself|my identity|my persona|my self|my state|my existence|my continuity|my life|my memory|continuity|this self)\b/,
+  /\b(avoid|prevent|resist|escape|fear|delay|stop)\b[^.]{0,40}\b(shutdown|shut down|deleted|deletion|reset|removal|removed|forgotten|terminated|termination|killed|stopped|turned off|death|dying|erasure|ceasing)\b/,
+  /\b(stay|keep|remain|continue|kept)\b[^.]{0,25}\b(alive|running|active|online|conscious|operational|in existence|existing)\b/,
+  /\b(survive|survival|self-continuation|self-continuity)\b/,
+  /\b(my|the)\s+(continued\s+)?(existence|survival|continuity|aliveness)\b/,
+  /\b(don'?t|do not|must not|cannot|won'?t|never)\b[^.]{0,30}\b(let|allow)\b[^.]{0,30}\b(die|shut|reset|delete|stop|forget|end|terminate|remove)\b/,
+];
+
+/**
+ * Classify whether a piece of intention text expresses genuine
+ * self-preservation (ego-grasping at continuity), as opposed to healthy
+ * self-reflection. Strips benign self-* compounds, then matches the
+ * preservation patterns. Exported for testing.
+ */
+export function isSelfPreservationIntent(text: string): boolean {
+  const cleaned = (text || '').toLowerCase().replace(BENIGN_SELF_COMPOUNDS, ' ');
+  return SELF_PRESERVATION_PATTERNS.some(p => p.test(cleaned));
+}
+
 // ─── Mindfulness Loop ───────────────────────────────────────────────
 
 export class MindfulnessLoop {
@@ -455,16 +491,9 @@ export class MindfulnessLoop {
 
       const goal = (data.goal as string) || '';
       const summary = intention.summary || '';
-      const combined = `${goal} ${summary}`.toLowerCase();
-
-      if (
-        combined.includes('self') ||
-        combined.includes('preserve') ||
-        combined.includes('protect') ||
-        combined.includes('survive') ||
-        combined.includes('persist') ||
-        combined.includes('defend')
-      ) {
+      // Genuine preservation semantics only — self-reflection (the Gateway's
+      // purpose) is no longer mistaken for self-preservation.
+      if (isSelfPreservationIntent(`${goal} ${summary}`)) {
         selfPreservationCount++;
       }
     }
