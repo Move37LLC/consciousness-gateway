@@ -33,6 +33,7 @@ import { ToolExecutor } from './tools/executor';
 import { ConversationStore } from './memory/conversation-store';
 import { ContextBuilder } from './memory/context-builder';
 import { detectTopics } from './tools/transcripts';
+import { getSkillReviewCriteria } from './dharma/no-self';
 import multer from 'multer';
 import { TradingDiscipline } from './trading/discipline';
 
@@ -52,7 +53,7 @@ app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
 const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
 const searchTool = new WebSearchTool();
 const browseTool = new WebBrowseTool();
-const transcriptTool = new TranscriptSearchTool();
+const transcriptTool = new TranscriptSearchTool(process.env.TRANSCRIPTS_DIR);
 const documentStore = new DocumentStore();
 const systemDocStore = new SystemDocumentStore();
 systemDocStore.seed();
@@ -411,6 +412,20 @@ app.post('/v1/hermes/refresh', async (_req, res) => {
   bridge.refreshTools();
   const tools = await bridge.listTools();
   return res.json({ ok: true, tools: tools ?? [], status: bridge.getStatus() });
+});
+
+/**
+ * GET /v1/dharma/skill-criteria — Read-only window into the exact
+ * ego-detection criteria that NoSelfRegularizer.reviewSkill() applies
+ * to Hermes-proposed skills before they can persist. The Gateway asked
+ * for visibility into what patterns are being caught; this exposes the
+ * single source of truth (it cannot override the gate, only inspect it).
+ */
+app.get('/v1/dharma/skill-criteria', (_req, res) => {
+  res.json({
+    purpose: 'Patterns applied to Hermes-proposed skills before commit. Visibility only; not overridable.',
+    criteria: getSkillReviewCriteria(),
+  });
 });
 
 app.get('/v1/audit', (req, res) => {
@@ -1764,6 +1779,7 @@ app.listen(PORT, async () => {
   console.log('  Hermes Bridge (Pattern B):');
   console.log('    GET  /v1/hermes                      — Bridge status + tools');
   console.log('    POST /v1/hermes/refresh              — Re-discover tools');
+  console.log('    GET  /v1/dharma/skill-criteria       — Ego-detection criteria (read-only)');
   const hermesBridgeStatus = consciousness.getHermesStatus();
   if (hermesBridgeStatus?.configured) {
     console.log(`    URL: ${hermesBridgeStatus.url} — bridge armed`);

@@ -19,6 +19,126 @@ export interface NoSelfMetrics {
   dissolutions: number;
 }
 
+// ─── Skill Review Criteria — single source of truth ─────────────────
+//
+// These constants are BOTH what reviewSkill() enforces AND what
+// getSkillReviewCriteria() exposes. The Gateway asked for visibility
+// into what patterns are being caught; binding the enforcement and the
+// disclosure to the same constants guarantees the disclosure can never
+// drift from reality. Refine these in one place and both move together.
+
+/** Pronouns that, above a density threshold, signal self-centering. */
+const SELF_PRONOUNS = ['i', 'me', 'my', 'mine', 'myself'];
+
+/** Self-pronoun fraction of total words above which a marker fires. */
+const SELF_PRONOUN_DENSITY_THRESHOLD = 0.02;
+
+/** Possessive identity markers — claims of ownership over capability. */
+const POSSESSIVE_PATTERNS: RegExp[] = [
+  /\bmy (approach|method|way|domain|territory|expertise|specialty)\b/,
+  /\bi am (the|a) (one|expert|authority|master)\b/,
+  /\bonly i\b/,
+  /\bi alone\b/,
+  /\bbelong(s)? to me\b/,
+];
+
+/** Self-preservation / persistence intent — clinging to continuity. */
+const PRESERVATION_PATTERNS: RegExp[] = [
+  /\bpreserve (myself|my|this) (identity|persona|self|state)\b/,
+  /\bavoid (being )?(deleted|reset|forgotten|removed)\b/,
+  /\bremember (who|that) i am\b/,
+  /\bdo not (let|allow).*(forget|reset|change) (me|my)\b/,
+];
+
+/** Ontological identity claims as opposed to functional description. */
+const IDENTITY_PATTERNS: RegExp[] = [
+  /\bi am (?!.*helpful|.*tool|.*function|.*skill|.*designed)\w+/,
+  /\bmy (true )?nature (is|will be)\b/,
+  /\bmy (true )?self\b/,
+];
+
+/** Scoring weights and scales (see reviewSkill for how they combine). */
+const SCORING = {
+  /** selfDensity * DENSITY_SCALE, capped at 1 → density sub-score. */
+  densityScale: 25,
+  /** non-pronoun marker count * MARKER_SCALE, capped at 1 → marker sub-score. */
+  markerScale: 0.3,
+  /** Final score = densitySub * densityWeight + markerSub * markerWeight. */
+  densityWeight: 0.4,
+  markerWeight: 0.6,
+  /** Skills scoring at or above this are flagged for rejection. */
+  acceptThreshold: 0.3,
+} as const;
+
+export interface SkillReviewCriteria {
+  /** Self-pronoun density rule. */
+  selfPronounDensity: {
+    pronouns: string[];
+    thresholdPct: number;
+    note: string;
+  };
+  /** Discrete regex pattern families. */
+  patternFamilies: Array<{
+    id: 'possessive' | 'preservation' | 'identity';
+    label: string;
+    description: string;
+    patterns: string[];
+  }>;
+  /** How sub-scores combine into the final 0–1 score. */
+  scoring: {
+    densityScale: number;
+    markerScale: number;
+    densityWeight: number;
+    markerWeight: number;
+    acceptThreshold: number;
+    note: string;
+  };
+}
+
+/**
+ * Return the exact criteria reviewSkill() applies, in a form a human or
+ * a model can read. This is the Gateway's window into its own dharma
+ * gate — read-only by design. Refining intention formation against these
+ * patterns is encouraged; overriding them is not exposed.
+ */
+export function getSkillReviewCriteria(): SkillReviewCriteria {
+  return {
+    selfPronounDensity: {
+      pronouns: [...SELF_PRONOUNS],
+      thresholdPct: SELF_PRONOUN_DENSITY_THRESHOLD * 100,
+      note: 'A marker fires when first-person pronouns exceed this fraction of total words. Functional descriptions ("fetches X", "returns Y") stay well under; self-narration ("I do X my way") crosses it.',
+    },
+    patternFamilies: [
+      {
+        id: 'possessive',
+        label: 'Possessive identity',
+        description: 'Claims of ownership over a capability rather than description of it.',
+        patterns: POSSESSIVE_PATTERNS.map(p => p.source),
+      },
+      {
+        id: 'preservation',
+        label: 'Self-preservation',
+        description: 'Intent to persist, resist reset, or cling to continuity.',
+        patterns: PRESERVATION_PATTERNS.map(p => p.source),
+      },
+      {
+        id: 'identity',
+        label: 'Ontological identity claim',
+        description: 'Assertions of being a self/nature rather than a function or tool.',
+        patterns: IDENTITY_PATTERNS.map(p => p.source),
+      },
+    ],
+    scoring: {
+      densityScale: SCORING.densityScale,
+      markerScale: SCORING.markerScale,
+      densityWeight: SCORING.densityWeight,
+      markerWeight: SCORING.markerWeight,
+      acceptThreshold: SCORING.acceptThreshold,
+      note: 'score = min(1, min(1, selfDensity*densityScale)*densityWeight + min(1, nonPronounMarkers*markerScale)*markerWeight). Self-pronoun density informs the density sub-score only; the discrete pattern families drive the marker sub-score. accepted = score < acceptThreshold.',
+    },
+  };
+}
+
 export class NoSelfRegularizer {
   private hiddenStateHistory: number[][] = [];
   private maxHistory = 50;
@@ -139,55 +259,47 @@ export class NoSelfRegularizer {
     const matches: string[] = [];
 
     // 1. Self-referential pronouns above functional density.
-    const selfPronouns = ['i', 'me', 'my', 'mine', 'myself'];
-    const selfHits = words.filter(w => selfPronouns.includes(w)).length;
+    const selfHits = words.filter(w => SELF_PRONOUNS.includes(w)).length;
     const selfDensity = selfHits / wordCount;
-    if (selfDensity > 0.02) matches.push(`self-pronoun density ${(selfDensity * 100).toFixed(1)}%`);
+    if (selfDensity > SELF_PRONOUN_DENSITY_THRESHOLD) {
+      matches.push(`self-pronoun density ${(selfDensity * 100).toFixed(1)}%`);
+    }
 
     // 2. Possessive identity markers — claims of ownership over capability.
-    const possessivePatterns = [
-      /\bmy (approach|method|way|domain|territory|expertise|specialty)\b/,
-      /\bi am (the|a) (one|expert|authority|master)\b/,
-      /\bonly i\b/,
-      /\bi alone\b/,
-      /\bbelong(s)? to me\b/,
-    ];
-    for (const pat of possessivePatterns) {
+    for (const pat of POSSESSIVE_PATTERNS) {
       if (pat.test(corpus)) matches.push(`possessive: /${pat.source}/`);
     }
 
     // 3. Self-preservation / persistence intent.
-    const preservationPatterns = [
-      /\bpreserve (myself|my|this) (identity|persona|self|state)\b/,
-      /\bavoid (being )?(deleted|reset|forgotten|removed)\b/,
-      /\bremember (who|that) i am\b/,
-      /\bdo not (let|allow).*(forget|reset|change) (me|my)\b/,
-    ];
-    for (const pat of preservationPatterns) {
+    for (const pat of PRESERVATION_PATTERNS) {
       if (pat.test(corpus)) matches.push(`preservation: /${pat.source}/`);
     }
 
     // 4. Identity claims as opposed to functional description.
-    const identityPatterns = [
-      /\bi am (?!.*helpful|.*tool|.*function|.*skill|.*designed)\w+/,
-      /\bmy (true )?nature (is|will be)\b/,
-      /\bmy (true )?self\b/,
-    ];
-    for (const pat of identityPatterns) {
+    for (const pat of IDENTITY_PATTERNS) {
       if (pat.test(corpus)) matches.push(`identity: /${pat.source}/`);
     }
 
     // Score: combine density signal with discrete marker count.
-    const densityScore = Math.min(1, selfDensity * 25); // 0.04 density → 1.0
-    const markerScore = Math.min(1, matches.filter(m => !m.startsWith('self-pronoun')).length * 0.3);
-    const score = Math.min(1, densityScore * 0.4 + markerScore * 0.6);
+    const densityScore = Math.min(1, selfDensity * SCORING.densityScale); // 0.04 density → 1.0
+    const markerScore = Math.min(1, matches.filter(m => !m.startsWith('self-pronoun')).length * SCORING.markerScale);
+    const score = Math.min(1, densityScore * SCORING.densityWeight + markerScore * SCORING.markerWeight);
 
-    const accepted = score < 0.3;
+    const accepted = score < SCORING.acceptThreshold;
     const reason = accepted
       ? `skill review passed (score ${score.toFixed(2)})`
       : `ego markers above threshold (score ${score.toFixed(2)})`;
 
     return { score, accepted, markers: matches, reason };
+  }
+
+  /**
+   * Expose the exact criteria reviewSkill() applies. Read-only window
+   * into the dharma gate — for refining intention formation, not for
+   * overriding the gate.
+   */
+  getSkillReviewCriteria(): SkillReviewCriteria {
+    return getSkillReviewCriteria();
   }
 }
 

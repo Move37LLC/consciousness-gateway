@@ -56,7 +56,11 @@ export class TranscriptSearchTool {
   private transcriptsDir: string;
 
   constructor(transcriptsDir?: string) {
-    this.transcriptsDir = transcriptsDir ?? DEFAULT_TRANSCRIPTS_DIR;
+    // Treat empty / whitespace-only env values as "not set" so the
+    // default applies. The default is a Linux path; on macOS or other
+    // hosts, set TRANSCRIPTS_DIR to where transcripts actually live.
+    const trimmed = transcriptsDir?.trim();
+    this.transcriptsDir = trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TRANSCRIPTS_DIR;
   }
 
   get available(): boolean {
