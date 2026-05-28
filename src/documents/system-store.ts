@@ -108,6 +108,31 @@ export class SystemDocumentStore {
         name: 'Gateway Self-Knowledge',
         filename: 'gateway-self-knowledge.md',
       },
+      // ─── Hermes Bridge (Pattern B) briefings ───────────────────────
+      // Per-personality notes about the action-surface extension.
+      // Loaded automatically into each voice's context so they speak
+      // accurately about what shipped and what's coming.
+      {
+        id: 'beaumont-hermes-bridge',
+        category: 'personality',
+        personality: 'beaumont',
+        name: 'Beaumont — Hermes Bridge Briefing',
+        filename: 'beaumont-hermes-bridge.md',
+      },
+      {
+        id: 'kern-hermes-bridge',
+        category: 'personality',
+        personality: 'kern',
+        name: 'Kern — Hermes Bridge Briefing',
+        filename: 'kern-hermes-bridge.md',
+      },
+      {
+        id: 'gateway-hermes-bridge',
+        category: 'personality',
+        personality: 'gateway',
+        name: 'Gateway — Hermes Bridge Self-Knowledge',
+        filename: 'gateway-hermes-bridge.md',
+      },
     ];
 
     const now = Date.now();

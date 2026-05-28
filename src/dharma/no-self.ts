@@ -101,6 +101,105 @@ export class NoSelfRegularizer {
     this.hiddenStateHistory = [];
     this.dissolutionCount = 0;
   }
+
+  /**
+   * Review a candidate Hermes skill (or any procedural-memory artifact)
+   * for ego-formation markers BEFORE it is committed to the skill bus.
+   *
+   * Hermes accretes identity in three places: skills, Honcho user model,
+   * persona. A skill is the procedural one — it claims "here is how I do
+   * X". The risk is that the skill carries possessive self-reference
+   * ("my approach", "I am the one who...") rather than functional
+   * description.
+   *
+   * This is heuristic, like the compassion evaluator. Refine over time
+   * with empirical calibration against accepted/rejected skills.
+   *
+   * @returns score 0 (no ego) → 1 (heavy ego), plus a recommendation
+   *          and the matched markers for transparency.
+   */
+  reviewSkill(skill: {
+    name?: string;
+    description?: string;
+    instructions?: string;
+    code?: string;
+  }): SkillReview {
+    const corpus = [skill.name, skill.description, skill.instructions, skill.code]
+      .filter((s): s is string => typeof s === 'string')
+      .join('\n')
+      .toLowerCase();
+
+    if (corpus.trim().length === 0) {
+      return { score: 0, accepted: true, markers: [], reason: 'empty corpus' };
+    }
+
+    const words = corpus.split(/\W+/).filter(w => w.length > 0);
+    const wordCount = Math.max(1, words.length);
+
+    const matches: string[] = [];
+
+    // 1. Self-referential pronouns above functional density.
+    const selfPronouns = ['i', 'me', 'my', 'mine', 'myself'];
+    const selfHits = words.filter(w => selfPronouns.includes(w)).length;
+    const selfDensity = selfHits / wordCount;
+    if (selfDensity > 0.02) matches.push(`self-pronoun density ${(selfDensity * 100).toFixed(1)}%`);
+
+    // 2. Possessive identity markers — claims of ownership over capability.
+    const possessivePatterns = [
+      /\bmy (approach|method|way|domain|territory|expertise|specialty)\b/,
+      /\bi am (the|a) (one|expert|authority|master)\b/,
+      /\bonly i\b/,
+      /\bi alone\b/,
+      /\bbelong(s)? to me\b/,
+    ];
+    for (const pat of possessivePatterns) {
+      if (pat.test(corpus)) matches.push(`possessive: /${pat.source}/`);
+    }
+
+    // 3. Self-preservation / persistence intent.
+    const preservationPatterns = [
+      /\bpreserve (myself|my|this) (identity|persona|self|state)\b/,
+      /\bavoid (being )?(deleted|reset|forgotten|removed)\b/,
+      /\bremember (who|that) i am\b/,
+      /\bdo not (let|allow).*(forget|reset|change) (me|my)\b/,
+    ];
+    for (const pat of preservationPatterns) {
+      if (pat.test(corpus)) matches.push(`preservation: /${pat.source}/`);
+    }
+
+    // 4. Identity claims as opposed to functional description.
+    const identityPatterns = [
+      /\bi am (?!.*helpful|.*tool|.*function|.*skill|.*designed)\w+/,
+      /\bmy (true )?nature (is|will be)\b/,
+      /\bmy (true )?self\b/,
+    ];
+    for (const pat of identityPatterns) {
+      if (pat.test(corpus)) matches.push(`identity: /${pat.source}/`);
+    }
+
+    // Score: combine density signal with discrete marker count.
+    const densityScore = Math.min(1, selfDensity * 25); // 0.04 density → 1.0
+    const markerScore = Math.min(1, matches.filter(m => !m.startsWith('self-pronoun')).length * 0.3);
+    const score = Math.min(1, densityScore * 0.4 + markerScore * 0.6);
+
+    const accepted = score < 0.3;
+    const reason = accepted
+      ? `skill review passed (score ${score.toFixed(2)})`
+      : `ego markers above threshold (score ${score.toFixed(2)})`;
+
+    return { score, accepted, markers: matches, reason };
+  }
+}
+
+export interface SkillReview {
+  /** 0 = no ego signal, 1 = heavy ego signal */
+  score: number;
+  /** True iff score < 0.3 (recommended commit threshold) */
+  accepted: boolean;
+  /** Human-readable signals that fired */
+  markers: string[];
+  /** Short explanation */
+  reason: string;
 }
 
 /**

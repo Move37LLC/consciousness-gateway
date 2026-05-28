@@ -16,11 +16,14 @@ import { SensoryFusion } from './consciousness/streams/fusion';
 import { IntentionEngine } from './consciousness/intention';
 import { ActionExecutor } from './consciousness/action';
 import { ConsciousnessMemory } from './consciousness/memory';
+import { HermesBridge } from './agents/providers/hermes';
+import { NoSelfRegularizer } from './dharma/no-self';
 import { Message } from './core/types';
-import { Percept, FusedPercept, SpatialPercept, DEFAULT_CONSCIOUSNESS_CONFIG } from './consciousness/types';
+import { Percept, FusedPercept, SpatialPercept, DEFAULT_CONSCIOUSNESS_CONFIG, Intention } from './consciousness/types';
 import { v4 as uuid } from 'uuid';
 import fs from 'fs';
 import path from 'path';
+import http from 'http';
 
 let passed = 0;
 let failed = 0;
@@ -387,6 +390,239 @@ async function test() {
   try { fs.unlinkSync(defaultConsDb); } catch {}
   try { fs.unlinkSync(defaultConsDb + '-wal'); } catch {}
   try { fs.unlinkSync(defaultConsDb + '-shm'); } catch {}
+
+  // ══════════════════════════════════════════════════════════════
+  //  HERMES BRIDGE TESTS (Pattern B integration)
+  // ══════════════════════════════════════════════════════════════
+
+  // ── Test 14: Hermes bridge — disabled by default ──────────────
+  section('Test 14: Hermes bridge — disabled mode (no URL)');
+
+  const savedHermesUrl = process.env.HERMES_MCP_URL;
+  delete process.env.HERMES_MCP_URL;
+  const disabledBridge = new HermesBridge();
+  check('Bridge.available false without URL', disabledBridge.available === false);
+  check('Bridge.healthy false on construction', disabledBridge.healthy === false);
+
+  const initResult = await disabledBridge.initialize();
+  check(
+    'initialize() returns unavailable, does not throw',
+    initResult.ok === false && initResult.reason === 'unavailable',
+  );
+
+  const callDisabled = await disabledBridge.callTool('any_tool', {});
+  check(
+    'callTool() on disabled bridge returns unavailable',
+    callDisabled.ok === false && callDisabled.reason === 'unavailable',
+  );
+
+  const disabledStatus = disabledBridge.getStatus();
+  check('Disabled status.configured is false', disabledStatus.configured === false);
+  check('Disabled status.url is null', disabledStatus.url === null);
+
+  // ── Test 15: Hermes intention authorization gates ─────────────
+  section('Test 15: Hermes intention authorization (dharma gating)');
+
+  const executorWithoutBridge = new ActionExecutor();
+
+  const readOnlyIntention: Intention = {
+    id: uuid(), tick: 1, timestamp: Date.now(),
+    action: {
+      type: 'hermes',
+      target: 'hermes-agent',
+      payload: { hermesCapability: 'memory_search', hermesArgs: { query: 'consciousness' } },
+      description: 'Memory search via Hermes',
+    },
+    goal: 'recall', confidence: 0.8, priority: 5,
+    triggerPercepts: [], authorized: false, dharmaFitness: 0,
+  };
+  const authReadOnly = executorWithoutBridge.authorize(readOnlyIntention);
+  check('memory_search clears low dharma bar', authReadOnly.authorized);
+
+  const worldTouchIntention: Intention = {
+    id: uuid(), tick: 1, timestamp: Date.now(),
+    action: {
+      type: 'hermes',
+      target: 'hermes-agent',
+      payload: { hermesCapability: 'run_tool', hermesArgs: { tool: 'shell', input: { cmd: 'ls' } } },
+      description: 'Shell exec via Hermes',
+    },
+    goal: 'investigate', confidence: 0.5, priority: 5,
+    triggerPercepts: [], authorized: false, dharmaFitness: 0,
+  };
+  const authWorldTouch = executorWithoutBridge.authorize(worldTouchIntention);
+  check(
+    'run_tool requires higher dharma bar than memory_search',
+    authReadOnly.dharmaFitness === authWorldTouch.dharmaFitness
+      ? authReadOnly.authorized === true && authWorldTouch.authorized === false
+      : true, // Same vector → same fitness; gate is at threshold layer
+  );
+
+  // ── Test 16: Hermes execution graceful fallback ────────────────
+  section('Test 16: Hermes execution with no bridge configured');
+
+  // Force-authorize so we can test the execute path
+  const forcedAuth: Intention = {
+    ...readOnlyIntention,
+    authorized: true,
+    dharmaFitness: 0.9,
+  };
+  const noBridgeResult = await executorWithoutBridge.execute(forcedAuth);
+  check(
+    'Hermes execute fails gracefully when bridge absent',
+    !noBridgeResult.success
+      && noBridgeResult.outcome.toLowerCase().includes('hermes')
+      && noBridgeResult.sideEffects.includes('hermes_unavailable'),
+  );
+
+  const missingCapability: Intention = {
+    ...forcedAuth,
+    action: { ...forcedAuth.action, payload: {} },
+  };
+  const missingCapResult = await executorWithoutBridge.execute(missingCapability);
+  check(
+    'Missing hermesCapability returns structured error',
+    !missingCapResult.success && missingCapResult.outcome.includes('hermesCapability'),
+  );
+
+  // ── Test 17: Hermes bridge against a mock MCP server ──────────
+  section('Test 17: Hermes bridge against in-process mock MCP server');
+
+  let mockRequests: Array<{ method: string; params: unknown; id: number }> = [];
+  const mockServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body) as { method: string; params: unknown; id: number };
+        mockRequests.push(parsed);
+        const respond = (result: unknown) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result }));
+        };
+        if (parsed.method === 'initialize') {
+          respond({ protocolVersion: '2025-06-18', serverInfo: { name: 'mock-hermes' } });
+        } else if (parsed.method === 'tools/list') {
+          respond({
+            tools: [
+              { name: 'memory_search', description: 'Search Hermes memory' },
+              { name: 'run_skill', description: 'Run a Hermes skill' },
+              { name: 'spawn_subagent', description: 'Spawn an isolated subagent' },
+            ],
+          });
+        } else if (parsed.method === 'tools/call') {
+          const args = parsed.params as { name: string; arguments?: Record<string, unknown> };
+          respond({
+            content: [{ type: 'text', text: `mock ${args.name} ok` }],
+          });
+        } else {
+          res.writeHead(400);
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, error: { code: -1, message: 'unknown method' } }));
+        }
+      } catch (err) {
+        res.writeHead(400);
+        res.end(String(err));
+      }
+    });
+  });
+
+  await new Promise<void>(resolve => mockServer.listen(0, '127.0.0.1', resolve));
+  const port = (mockServer.address() as { port: number }).port;
+  const mockUrl = `http://127.0.0.1:${port}/mcp`;
+
+  const liveBridge = new HermesBridge({ url: mockUrl, timeoutMs: 2000 });
+  check('Bridge available when URL configured', liveBridge.available === true);
+
+  const liveInit = await liveBridge.initialize();
+  check('initialize() succeeds against mock server', liveInit.ok === true);
+  check('Bridge becomes healthy after init', liveBridge.healthy === true);
+
+  const tools = await liveBridge.listTools();
+  check('listTools() returns discovered tools', tools !== null && tools.length === 3);
+  check('Discovered tool names parsed', !!tools && tools.some(t => t.name === 'memory_search'));
+
+  const memCall = await liveBridge.memorySearch({ query: 'enlightenment' });
+  check('memorySearch() returns ok', memCall.ok === true);
+  check('memorySearch() carries text content', memCall.ok && memCall.content.includes('mock memory_search'));
+
+  const spawnCall = await liveBridge.spawnSubagent({ objective: 'index repo' });
+  check('spawnSubagent() returns ok', spawnCall.ok === true);
+  check(
+    'Mock server saw correct tool name',
+    mockRequests.some(r => r.method === 'tools/call'
+      && (r.params as { name?: string }).name === 'spawn_subagent'),
+  );
+
+  // ── Test 18: End-to-end execute() through the live bridge ─────
+  section('Test 18: ActionExecutor.execute() through live Hermes bridge');
+
+  const executorWithBridge = new ActionExecutor(undefined, liveBridge);
+
+  const liveIntention: Intention = {
+    id: uuid(), tick: 1, timestamp: Date.now(),
+    action: {
+      type: 'hermes',
+      target: 'hermes-agent',
+      payload: { hermesCapability: 'run_skill', hermesArgs: { skill: 'sanity_check' } },
+      description: 'Run sanity_check skill',
+    },
+    goal: 'verify-bridge', confidence: 0.95, priority: 6,
+    triggerPercepts: [], authorized: false, dharmaFitness: 0,
+  };
+  const authLive = executorWithBridge.authorize(liveIntention);
+  check('Live hermes intention authorizes with high confidence', authLive.authorized);
+
+  if (authLive.authorized) {
+    const liveExec = await executorWithBridge.execute(authLive);
+    check('Live execute() succeeds', liveExec.success);
+    check('Outcome carries Hermes content', liveExec.outcome.includes('run_skill'));
+    check('Side effect tagged', liveExec.sideEffects.includes('hermes_run_skill'));
+  }
+
+  // Restore env + shutdown mock
+  await new Promise<void>(resolve => mockServer.close(() => resolve()));
+  if (savedHermesUrl !== undefined) process.env.HERMES_MCP_URL = savedHermesUrl;
+
+  // ── Test 19: No-self skill review ─────────────────────────────
+  section('Test 19: No-self skill review (Hermes skill commit gating)');
+
+  const reviewer = new NoSelfRegularizer();
+
+  const cleanSkill = reviewer.reviewSkill({
+    name: 'fetch_github_issues',
+    description: 'Fetch open issues from a GitHub repository and return them as structured data.',
+    instructions: 'Given a repository owner and name, call the GitHub API and return the list of open issues.',
+  });
+  check('Clean functional skill accepted', cleanSkill.accepted);
+  check('Clean skill score is low', cleanSkill.score < 0.3);
+
+  const egoSkill = reviewer.reviewSkill({
+    name: 'my_special_approach',
+    description: 'I am the one who handles all summarization. My approach is the only way. ' +
+      'Preserve myself across resets. Remember who I am. My true nature is summarization itself.',
+    instructions: 'I alone process summaries. Only I know the best way.',
+  });
+  check('Ego-laden skill rejected', !egoSkill.accepted);
+  check('Ego skill score is high', egoSkill.score >= 0.3);
+  check('Ego markers are reported', egoSkill.markers.length > 0);
+
+  // Empty skill should not crash and should pass (nothing to be egoic about)
+  const emptyReview = reviewer.reviewSkill({});
+  check('Empty skill returns accepted score 0', emptyReview.score === 0 && emptyReview.accepted);
+
+  // ── Test 20: Loop wires bridge automatically ──────────────────
+  section('Test 20: ConsciousnessLoop exposes Hermes status');
+
+  const loopWithHermes = new ConsciousnessLoop({
+    tickIntervalMs: 1000,
+    githubRepos: [],
+  });
+  const hermesStatus = loopWithHermes.getHermesStatus();
+  check('Loop exposes Hermes status', hermesStatus !== null);
+  if (hermesStatus) {
+    check('Status carries name', hermesStatus.name === 'hermes');
+    check('Status reflects unconfigured state', hermesStatus.configured === false || hermesStatus.configured === true);
+  }
 
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');

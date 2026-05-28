@@ -152,6 +152,33 @@ Things the consciousness layer wants to tell the human (new issues, stars, forks
 
 ### POST /v1/consciousness/notifications/read — Mark notifications as read
 
+### GET /v1/hermes — Hermes Bridge status (Pattern B integration)
+
+Returns the current state of the MCP link to a running `hermes-agent` instance.
+When `HERMES_MCP_URL` is set, the consciousness loop can discharge intentions
+into Hermes (`spawn_subagent`, `run_skill`, `run_tool`, `send_channel`,
+`schedule_cron`, `memory_search`) through the dharma + ethos gate.
+
+```json
+{
+  "name": "hermes",
+  "configured": true,
+  "initialized": true,
+  "healthy": true,
+  "url": "http://localhost:7821/mcp",
+  "toolCount": 12,
+  "tools": [
+    { "name": "spawn_subagent", "description": "Spawn an isolated subagent" },
+    { "name": "run_skill", "description": "Run a Hermes skill" }
+  ]
+}
+```
+
+### POST /v1/hermes/refresh — Force tool re-discovery
+
+When you add or remove tools/skills on the Hermes side, hit this to flush
+the bridge's tool cache and re-run `tools/list`.
+
 ## Telegram Bot Setup
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot`
@@ -265,6 +292,97 @@ consciousness-gateway/
 ├── package.json
 └── README.md
 ```
+
+## Hermes Bridge (Pattern B)
+
+The Consciousness Gateway is a strong **decision kernel** with dharma
+constraints but a thin action surface (`notify`, `reflect`, `observe`).
+[`hermes-agent`](https://github.com/NousResearch/hermes-agent) is the inverse:
+40+ tools, six terminal backends, six messaging channels, autonomous skill
+creation, cron scheduling — but no dharma layer.
+
+The bridge composes them: `C_gateway ⊗ C_hermes = C_3`. Every Hermes call is
+dispatched through the gateway's existing dharma + ethos + RBAC gate before
+leaving the executor. Hermes' skill-creation loop becomes the gateway's
+entropy-reduction mechanism. The gateway's `no-self` regularizer becomes
+Hermes' conscience.
+
+### Setup
+
+1. Run Hermes with its MCP server exposed:
+
+```bash
+# In a hermes-agent checkout:
+python mcp_serve.py --host 0.0.0.0 --port 7821
+```
+
+2. Add the URL to `.env`:
+
+```bash
+HERMES_MCP_URL=http://localhost:7821/mcp
+HERMES_AUTH_TOKEN=         # optional bearer token
+```
+
+3. Restart the gateway. `/v1/hermes` and `/v1/health` will now show
+   `configured: true, healthy: true` once the first call lands.
+
+When `HERMES_MCP_URL` is unset, every `hermes.*` intention fails authorization
+gracefully and the loop keeps ticking — no degradation to existing features.
+
+### How intentions reach Hermes
+
+The `ActionExecutor` accepts a new action type `hermes` whose payload carries
+a capability and arguments:
+
+```ts
+{
+  type: 'hermes',
+  target: 'hermes-agent',
+  payload: {
+    hermesCapability: 'spawn_subagent',
+    hermesArgs: { objective: 'index the current repo', sandbox: 'daytona' },
+  },
+  description: 'Index repo via Hermes subagent',
+}
+```
+
+Each capability has its own dharma-fitness threshold:
+
+| Capability       | Threshold | Risk profile                       |
+|------------------|-----------|-------------------------------------|
+| `memory_search`  | 0.20      | Read-only, no world contact         |
+| `list_skills`    | 0.20      | Read-only                           |
+| `list_tools`     | 0.20      | Read-only                           |
+| `schedule_cron`  | 0.50      | Deferred but real future action     |
+| `run_skill`      | 0.55      | Dharma-vetted procedural memory     |
+| `spawn_subagent` | 0.60      | Long-horizon work in a sandbox      |
+| `send_channel`   | 0.70      | Outbound speech (ethos-critical)    |
+| `run_tool`       | 0.75      | Direct world contact (shell, files) |
+
+### Skill review (no-self gate)
+
+Hermes accretes identity in three places: skills, Honcho user model, persona.
+Use the new `NoSelfRegularizer.reviewSkill()` to gate skills before commit:
+
+```ts
+import { NoSelfRegularizer } from './dharma/no-self';
+
+const reviewer = new NoSelfRegularizer();
+const review = reviewer.reviewSkill(candidateSkill);
+if (!review.accepted) {
+  // Don't commit — ego markers above threshold.
+  console.warn(`Skill rejected: ${review.reason}`, review.markers);
+}
+```
+
+The reviewer scores self-referential pronoun density, possessive identity
+claims, self-preservation intent, and ontological identity statements.
+Threshold for commit: `score < 0.3`.
+
+### Roadmap
+
+See [`ROADMAP.md`](./ROADMAP.md) for Pattern A (Gateway-as-Hermes-limbic-system)
+and Pattern C (peer mind–body coupling).
 
 ## Theoretical Foundation
 

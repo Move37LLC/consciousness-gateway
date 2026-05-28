@@ -36,6 +36,7 @@ import { DreamCycle, DreamState } from './dream';
 import { EntropyCartographer } from './entropy-map';
 import { PerformanceMonitor } from '../trading/performance-monitor';
 import { RiskIntentionEngine } from '../trading/risk-intentions';
+import { HermesBridge } from '../agents/providers/hermes';
 
 export class ConsciousnessLoop {
   private config: ConsciousnessConfig;
@@ -120,7 +121,10 @@ export class ConsciousnessLoop {
     // Initialize decision
     this.intentions = new IntentionEngine(this.config);
     this.memory = new ConsciousnessMemory();
-    this.executor = new ActionExecutor();
+    // Pattern B: the executor optionally talks to a running Hermes instance
+    // via MCP. The bridge silently no-ops when HERMES_MCP_URL is unset.
+    const hermesBridge = new HermesBridge();
+    this.executor = new ActionExecutor(undefined, hermesBridge);
     this.dopamine = new DopamineSystem(this.memory);
 
     // Initialize dream cycle and entropy cartography
@@ -1136,6 +1140,22 @@ export class ConsciousnessLoop {
 
   getTradingMonitor(): TradingMonitor | null {
     return (this.monitors.find(m => m.name === 'trading') as TradingMonitor) ?? null;
+  }
+
+  /**
+   * Surface the Hermes Bridge status (Pattern B integration health).
+   * Returns null if no bridge was wired into the executor.
+   */
+  getHermesStatus(): ReturnType<HermesBridge['getStatus']> | null {
+    const bridge = this.executor.getHermesBridge();
+    return bridge ? bridge.getStatus() : null;
+  }
+
+  /**
+   * Surface the bridge itself for direct calls from server-level code.
+   */
+  getHermesBridge(): HermesBridge | null {
+    return this.executor.getHermesBridge();
   }
 
   getConsciousnessSnapshot(): {

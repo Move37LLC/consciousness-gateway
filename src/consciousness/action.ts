@@ -14,25 +14,58 @@
  * With this, autonomous action is a conscious agent choosing.
  */
 
-import { Intention, ActionResult, ActionType } from './types';
+import { Intention, ActionResult, ActionType, HermesCapability } from './types';
 import { NoSelfRegularizer } from '../dharma/no-self';
 import { EntropyOptimizer } from '../dharma/entropy';
 import { CompassionEvaluator } from '../dharma/compassion';
 import { GatewayDatabase } from '../core/database';
+import { HermesBridge, HermesCallResult } from '../agents/providers/hermes';
+
+/**
+ * Hermes capabilities carry different real-world risk and therefore
+ * different dharma-fitness thresholds. Read-only memory/list calls are
+ * cheap. World-touching calls (run_tool, send_channel) require the
+ * highest fitness — they are the dharma layer's hottest hot path.
+ */
+const HERMES_THRESHOLDS: Record<HermesCapability, number> = {
+  memory_search:  0.2,   // read-only
+  list_skills:    0.2,   // read-only
+  list_tools:     0.2,   // read-only
+  schedule_cron:  0.5,   // deferred but real
+  run_skill:      0.55,  // dharma-vetted procedure
+  spawn_subagent: 0.6,   // long-horizon work; loop trusts subagent isolation
+  send_channel:   0.7,   // outbound speech — ethos-critical
+  run_tool:       0.75,  // direct world contact — highest bar
+};
 
 export class ActionExecutor {
   private noSelf: NoSelfRegularizer;
   private entropy: EntropyOptimizer;
   private compassion: CompassionEvaluator;
   private db: GatewayDatabase | null;
+  private hermes: HermesBridge | null;
   private actionLog: ActionResult[] = [];
   private maxLog = 200;
 
-  constructor(db?: GatewayDatabase) {
+  constructor(db?: GatewayDatabase, hermes?: HermesBridge) {
     this.noSelf = new NoSelfRegularizer();
     this.entropy = new EntropyOptimizer(0.1);
     this.compassion = new CompassionEvaluator();
     this.db = db ?? null;
+    this.hermes = hermes ?? null;
+  }
+
+  /**
+   * Inject (or replace) the Hermes bridge after construction.
+   * Useful when the bridge is wired up by the server after the loop has
+   * already been instantiated.
+   */
+  setHermesBridge(bridge: HermesBridge | null): void {
+    this.hermes = bridge;
+  }
+
+  getHermesBridge(): HermesBridge | null {
+    return this.hermes;
   }
 
   /**
@@ -85,9 +118,20 @@ export class ActionExecutor {
       'notify': 0.3,     // Notifying human is low-risk
       'respond': 0.5,    // Responding externally needs more
       'create': 0.6,     // Creating content needs high fitness
+      'hermes': 0.55,    // World-touching; refined per-capability below
     };
 
-    const threshold = safetyThresholds[intention.action.type] ?? 0.5;
+    let threshold = safetyThresholds[intention.action.type] ?? 0.5;
+
+    // Hermes actions refine the threshold by sub-capability — running a
+    // dharma-vetted skill is cheaper than spawning a shell subagent.
+    if (intention.action.type === 'hermes') {
+      const cap = intention.action.payload?.hermesCapability as HermesCapability | undefined;
+      if (cap && HERMES_THRESHOLDS[cap] !== undefined) {
+        threshold = HERMES_THRESHOLDS[cap];
+      }
+    }
+
     const authorized = dharmaFitness >= threshold;
 
     return { ...intention, authorized, dharmaFitness };
@@ -131,6 +175,9 @@ export class ActionExecutor {
         break;
       case 'create':
         result = await this.executeCreate(intention);
+        break;
+      case 'hermes':
+        result = await this.executeHermes(intention);
         break;
       default:
         result = {
@@ -248,6 +295,96 @@ export class ActionExecutor {
     };
   }
 
+  /**
+   * Dispatch a `hermes` intention into the Hermes Bridge.
+   *
+   * Required payload fields:
+   *   - `hermesCapability` — one of HermesCapability values
+   *   - `hermesArgs` — capability-specific argument object
+   *
+   * The dharma gate has already passed at this point (authorize() ran
+   * the capability-specific threshold). Failures here are operational
+   * (Hermes unreachable, tool errored), not safety violations.
+   */
+  private async executeHermes(intention: Intention): Promise<ActionResult> {
+    const payload = intention.action.payload ?? {};
+    const capability = payload.hermesCapability as HermesCapability | undefined;
+    const args = (payload.hermesArgs as Record<string, unknown> | undefined) ?? {};
+
+    if (!capability) {
+      return {
+        intentionId: intention.id,
+        tick: intention.tick,
+        timestamp: Date.now(),
+        success: false,
+        outcome: 'Hermes intention missing payload.hermesCapability',
+        sideEffects: [],
+      };
+    }
+
+    if (!this.hermes) {
+      return {
+        intentionId: intention.id,
+        tick: intention.tick,
+        timestamp: Date.now(),
+        success: false,
+        outcome: 'Hermes bridge not configured (HERMES_MCP_URL unset)',
+        sideEffects: ['hermes_unavailable'],
+      };
+    }
+
+    const callResult = await this.dispatchHermesCapability(capability, args);
+
+    if (!callResult.ok) {
+      return {
+        intentionId: intention.id,
+        tick: intention.tick,
+        timestamp: Date.now(),
+        success: false,
+        outcome: `Hermes ${capability} failed: ${callResult.reason}${callResult.detail ? ' — ' + callResult.detail : ''}`,
+        sideEffects: [`hermes_${callResult.reason}`],
+      };
+    }
+
+    return {
+      intentionId: intention.id,
+      tick: intention.tick,
+      timestamp: Date.now(),
+      success: true,
+      outcome: `Hermes ${capability}: ${truncate(callResult.content, 240) || 'ok'}`,
+      sideEffects: [`hermes_${capability}`],
+    };
+  }
+
+  private dispatchHermesCapability(
+    capability: HermesCapability,
+    args: Record<string, unknown>,
+  ): Promise<HermesCallResult> {
+    if (!this.hermes) {
+      return Promise.resolve({ ok: false, reason: 'unavailable' });
+    }
+    switch (capability) {
+      case 'spawn_subagent':
+        return this.hermes.spawnSubagent(args as { objective: string });
+      case 'run_skill':
+        return this.hermes.runSkill(args as { skill: string });
+      case 'run_tool':
+        return this.hermes.runTool(args as { tool: string });
+      case 'send_channel':
+        return this.hermes.sendChannel(args as { channel: string; content: string });
+      case 'schedule_cron':
+        return this.hermes.scheduleCron(args as { cron: string; objective: string });
+      case 'memory_search':
+        return this.hermes.memorySearch(args as { query: string });
+      case 'list_skills':
+        return this.hermes.callTool('list_skills', args);
+      case 'list_tools':
+        return this.hermes.callTool('list_tools', args);
+      default:
+        return Promise.resolve({ ok: false, reason: 'error', detail: `unknown capability: ${capability}` });
+    }
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────
 
   private generateReflection(payload: Record<string, unknown>): string {
@@ -281,6 +418,7 @@ export class ActionExecutor {
     const typeEncoding: Record<ActionType, number> = {
       'idle': 0, 'reflect': 0.1, 'observe': 0.2,
       'adjust': 0.4, 'notify': 0.5, 'respond': 0.7, 'create': 0.9,
+      'hermes': 0.8, // World-touching outlet — sits between respond and create.
     };
 
     return [
@@ -316,4 +454,9 @@ export class ActionExecutor {
   getRecentActions(): ActionResult[] {
     return [...this.actionLog];
   }
+}
+
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + '…';
 }

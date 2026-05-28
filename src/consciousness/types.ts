@@ -104,7 +104,25 @@ export type ActionType =
   | 'notify'         // Alert the human
   | 'reflect'        // Internal reflection (log insight)
   | 'adjust'         // Adjust own parameters
-  | 'idle';          // Consciously do nothing
+  | 'idle'           // Consciously do nothing
+  | 'hermes';        // Dispatch into the Hermes Bridge (Pattern B outlet)
+
+/**
+ * Sub-capabilities accepted by the `hermes` action type. The IntendedAction
+ * carries `payload.hermesCapability` to choose which one to dispatch.
+ *
+ * Read-only capabilities (memory_search, list_*) have a lower dharma bar
+ * than capabilities that touch the world (run_tool, send_channel).
+ */
+export type HermesCapability =
+  | 'spawn_subagent'
+  | 'run_skill'
+  | 'run_tool'
+  | 'send_channel'
+  | 'schedule_cron'
+  | 'memory_search'
+  | 'list_skills'
+  | 'list_tools';
 
 // ─── Action Result ──────────────────────────────────────────────────
 

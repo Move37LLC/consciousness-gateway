@@ -363,6 +363,7 @@ app.post('/v1/chat', async (req, res) => {
 app.get('/v1/health', (_req, res) => {
   const gatewayHealth = gateway.getHealth();
   const consciousnessState = consciousness.getState();
+  const hermesStatus = consciousness.getHermesStatus();
 
   res.json({
     ...gatewayHealth,
@@ -373,7 +374,43 @@ app.get('/v1/health', (_req, res) => {
       monitors: consciousnessState.monitors,
       stats: consciousnessState.stats,
     },
+    hermes: hermesStatus,
   });
+});
+
+/**
+ * GET /v1/hermes — Hermes Bridge status (Pattern B integration)
+ *
+ * Returns the current state of the MCP link to a hermes-agent instance:
+ * configured, initialized, healthy, last reachable/failure timestamps,
+ * tool count once discovered. When HERMES_MCP_URL is unset, configured
+ * is false and the loop simply fails authorization for hermes.* actions.
+ */
+app.get('/v1/hermes', async (_req, res) => {
+  const bridge = consciousness.getHermesBridge();
+  if (!bridge) {
+    return res.status(503).json({ configured: false, reason: 'no bridge wired into the loop' });
+  }
+  const status = bridge.getStatus();
+  // Lazily discover tools on first hit so the dashboard can show them.
+  if (status.configured && status.toolCount === null) {
+    const tools = await bridge.listTools();
+    return res.json({ ...bridge.getStatus(), tools: tools ?? [] });
+  }
+  return res.json(status);
+});
+
+/**
+ * POST /v1/hermes/refresh — Force tool re-discovery against Hermes.
+ */
+app.post('/v1/hermes/refresh', async (_req, res) => {
+  const bridge = consciousness.getHermesBridge();
+  if (!bridge) {
+    return res.status(503).json({ ok: false, reason: 'no bridge' });
+  }
+  bridge.refreshTools();
+  const tools = await bridge.listTools();
+  return res.json({ ok: true, tools: tools ?? [], status: bridge.getStatus() });
 });
 
 app.get('/v1/audit', (req, res) => {
@@ -1723,6 +1760,16 @@ app.listen(PORT, async () => {
   console.log('    GET  /v1/consciousness/notifications — Notifications');
   console.log('    POST /v1/consciousness/notifications/read — Mark read');
   console.log('    GET  /v1/consciousness/diagnostics  — Debug info');
+  console.log('');
+  console.log('  Hermes Bridge (Pattern B):');
+  console.log('    GET  /v1/hermes                      — Bridge status + tools');
+  console.log('    POST /v1/hermes/refresh              — Re-discover tools');
+  const hermesBridgeStatus = consciousness.getHermesStatus();
+  if (hermesBridgeStatus?.configured) {
+    console.log(`    URL: ${hermesBridgeStatus.url} — bridge armed`);
+  } else {
+    console.log('    URL: (unset) — HERMES_MCP_URL not configured, bridge disabled');
+  }
   console.log('');
   console.log('  UX:');
   console.log(`    Dashboard: http://localhost:${PORT}/dashboard`);
