@@ -26,6 +26,11 @@
 # p95/p99 via histogram_quantile), and active-connection counts. Traces (OTLP)
 # carry mcp.method + mcp.session_id for session-lifecycle visibility.
 config:
+  # Bind the admin UI to all interfaces so the host port mapping reaches it.
+  # (Default is localhost-only INSIDE the container, which Docker can't forward.)
+  # NOTE: this exposes the management UI on the network — fine for the local
+  # sandbox; firewall/limit it before exposing the Mac mini beyond localhost.
+  adminAddr: "0.0.0.0:15000"
   statsAddr: "0.0.0.0:15020"        # scrape http://agentgateway:15020/metrics
   logging:
     level: "info"                    # bump to "info,mcp=debug" when debugging
