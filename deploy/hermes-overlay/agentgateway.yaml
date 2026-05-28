@@ -73,7 +73,7 @@ binds:
         # ── AUTHENTICATION — Policy Enforcement Point (hybrid sandbox→prod) ───
         # SANDBOX MODEL (active): NO inbound validation — loopback / compose-net
         # trust only. The consciousness-gateway still attaches its static
-        # `Authorization: Bearer ${HERMES_AUTH_TOKEN}`, but it rides along
+        # `Authorization: Bearer <token>`, but it rides along
         # UNVALIDATED here, which is enough to exercise the session-pinning
         # patch. SAFE ONLY while port 3000 is bound to localhost / the private
         # compose network — do NOT expose it publicly in sandbox mode.
@@ -123,12 +123,13 @@ binds:
             stdio:
               cmd: hermes
               args: ["mcp", "serve"]
-              # NOTE: no per-target `env` here. This build resolves ${VAR} refs
-              # against agentgateway's OWN environment and hard-errors on a miss.
-              # The spawned child inherits agentgateway's process env, so HOME
-              # (set in the image) and any downstream secret (HERMES_AUTH_TOKEN)
-              # are provided at the CONTAINER level via docker-compose
-              # `environment:` — the implicit-trust, container-bound hop.
+              # NOTE: no per-target `env` here. This build runs a TEXTUAL
+              # dollar-brace substitution over the WHOLE config file (comments
+              # included) and hard-errors on a missing var, so we avoid such
+              # refs entirely. The spawned child inherits agentgateway's process
+              # env, so HOME (set in the image) and any downstream secret
+              # (HERMES_AUTH_TOKEN) are provided at the CONTAINER level via
+              # docker-compose `environment:` — the implicit-trust hop.
 
           # ── PHASE 1 — read-leaning federation (Kern-approved) ──────────────
           # Each target widens the Gateway's "body" with a vetted toolset; the
@@ -161,14 +162,16 @@ binds:
 
           # ── PHASE 2 — held until the read-only set is verified ─────────────
           # github is write-capable and needs a PAT. Kern's call: do not expose
-          # until Phase 1 latency/failure numbers are in. Uncomment + supply
-          # GITHUB_TOKEN to promote.
+          # until Phase 1 latency/failure numbers are in. To promote: provide
+          # GITHUB_TOKEN to the container, uncomment below, and set the env value
+          # to a dollar-brace GITHUB_TOKEN ref (omitted here because this build
+          # substitutes dollar-brace refs even inside comments).
           # - name: github
           #   stdio:
           #     cmd: npx
           #     args: ["-y", "@modelcontextprotocol/server-github"]
           #     env:
-          #       GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+          #       GITHUB_PERSONAL_ACCESS_TOKEN: "<dollar-brace GITHUB_TOKEN ref>"
 
     # ─────────────────────────────────────────────────────────────────────────
     # ROUTE 2 — A2A (Agent-to-Agent) — FUTURE async goal delegation "down the wire"
