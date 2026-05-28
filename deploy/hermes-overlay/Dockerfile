@@ -33,10 +33,8 @@ RUN pip install --no-cache-dir hermes-agent || \
     echo ">> Adjust the Hermes install line to match your distribution."
 
 # Copy the agentgateway binary out of the official image.
-# CONFIRM the source path on your tag with:
-#   docker run --rm --entrypoint sh ghcr.io/agentgateway/agentgateway:latest \
-#     -c 'command -v agentgateway || ls -1 / /usr/local/bin /app 2>/dev/null'
-COPY --from=agw /usr/local/bin/agentgateway /usr/local/bin/agentgateway
+# Confirmed path via `docker inspect ... .Config.Entrypoint` → ["/app/agentgateway"].
+COPY --from=agw /app/agentgateway /usr/local/bin/agentgateway
 
 # Unprivileged user with a stable HOME for Hermes' ~/.hermes session store.
 RUN useradd --create-home --home-dir /home/hermes --shell /bin/bash hermes \
