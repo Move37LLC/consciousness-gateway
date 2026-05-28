@@ -28,7 +28,7 @@
 config:
   statsAddr: "0.0.0.0:15020"        # scrape http://agentgateway:15020/metrics
   logging:
-    level: "info,mcp=debug"
+    level: "info"                    # bump to "info,mcp=debug" when debugging
     format: json                     # structured logs → easy to ship/parse
   tracing:
     otlpEndpoint: http://jaeger:4317 # session lifecycle + per-call spans
@@ -138,8 +138,9 @@ binds:
           # mcpAuthorization allow-list (see route policies) can pin tool names.
           - name: filesystem
             stdio:
-              cmd: npx
-              args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+              # Pre-installed console script (see Dockerfile) → instant spawn.
+              cmd: mcp-server-filesystem
+              args: ["/workspace"]
 
           # git — TEMPORARILY DISABLED: /workspace is an empty read-only dir,
           # not a git repo ("/workspace is not a valid Git repository"). Re-enable
@@ -152,13 +153,13 @@ binds:
 
           - name: fetch
             stdio:
-              cmd: uvx
-              args: ["mcp-server-fetch"]
+              cmd: mcp-server-fetch
+              args: []
 
           - name: time
             stdio:
-              cmd: uvx
-              args: ["mcp-server-time"]
+              cmd: mcp-server-time
+              args: []
 
           # ── PHASE 2 — held until the read-only set is verified ─────────────
           # github is write-capable and needs a PAT. Kern's call: do not expose

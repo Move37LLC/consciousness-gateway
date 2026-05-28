@@ -26,11 +26,17 @@ RUN apt-get update \
     && pip install --no-cache-dir uv \
     && rm -rf /var/lib/apt/lists/*
 
-# Hermes agent (provides `hermes mcp serve`). Pin a version in production.
-# If Hermes is installed from source rather than PyPI, replace this with the
-# appropriate `pip install git+https://github.com/NousResearch/hermes-agent.git`.
-RUN pip install --no-cache-dir hermes-agent || \
-    echo ">> Adjust the Hermes install line to match your distribution."
+# Pre-install the federated MCP servers so each per-connection stdio spawn is
+# instant and quiet — no npx/uvx re-resolution (kills the PubGrub log spam and
+# the ~7s first-spawn latency that would otherwise hit every new session).
+RUN npm install -g @modelcontextprotocol/server-filesystem \
+    && pip install --no-cache-dir mcp-server-fetch mcp-server-time
+
+# Hermes (NousResearch/hermes-agent) — TODO, separate step. `pip install
+# hermes-agent` pulls an UNRELATED PyPI package (runtime ModuleNotFoundError
+# 'mcp_serve'). The real MCP server is mcp_serve.py and must be installed from
+# source with its ~/.hermes config/credentials. Left out until that's wired:
+#   RUN pip install --no-cache-dir git+https://github.com/NousResearch/hermes-agent.git
 
 # Copy the agentgateway binary out of the official image.
 # Confirmed path via `docker inspect ... .Config.Entrypoint` → ["/app/agentgateway"].
