@@ -948,6 +948,119 @@ async function test() {
 
   await new Promise<void>(resolve => orderingServer.close(() => resolve()));
 
+  // ── Test 29: Hermes delegation round-trip (send→poll) ─────────
+  section('Test 29: Hermes delegation send→poll round-trip');
+
+  // Mock the messaging surface: events_poll (cursor snapshot), messages_send
+  // (captures our outbound text), events_wait (returns the echo of our send +
+  // the agent's reply). The echo carries the correlation token but NO direction
+  // marker, so a correct bridge must skip it via the token alone.
+  let sentMessage = '';
+  const delegRequests: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const delegServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const parsed = JSON.parse(body) as { method: string; params?: { name?: string; arguments?: Record<string, unknown> }; id?: number };
+      const respond = (result: unknown) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result }));
+      };
+      const asText = (payload: unknown) => respond({ content: [{ type: 'text', text: JSON.stringify(payload) }] });
+      if (parsed.method === 'initialize') {
+        respond({ protocolVersion: '2025-06-18', serverInfo: { name: 'deleg-mock' } });
+      } else if (parsed.method === 'tools/call') {
+        const name = parsed.params?.name ?? '';
+        const args = parsed.params?.arguments ?? {};
+        delegRequests.push({ name, args });
+        if (name === 'events_poll') {
+          asText({ events: [], next_cursor: 50 });
+        } else if (name === 'messages_send') {
+          sentMessage = String(args.message ?? '');
+          asText({ ok: true, queued: true });
+        } else if (name === 'events_wait') {
+          if (sentMessage) {
+            asText({ events: [
+              // echo of our own send: token present, no direction field
+              { cursor: 51, data: { text: sentMessage } },
+              // the agent's reply: inbound, no token
+              { cursor: 52, data: { direction: 'inbound', text: 'PONG — task complete' } },
+            ] });
+          } else {
+            asText({ events: [] });
+          }
+        } else {
+          asText({ content: [{ type: 'text', text: 'ok' }] });
+        }
+      } else {
+        res.writeHead(400);
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id ?? null, error: { code: -1, message: 'unknown' } }));
+      }
+    });
+  });
+  await new Promise<void>(resolve => delegServer.listen(0, '127.0.0.1', resolve));
+  const delegPort = (delegServer.address() as { port: number }).port;
+  const delegUrl = `http://127.0.0.1:${delegPort}/mcp`;
+
+  // 29a — target unset → clear, non-throwing error (no network touched).
+  const noTargetBridge = new HermesBridge({ url: delegUrl, timeoutMs: 2000 });
+  const noTarget = await noTargetBridge.delegate('do a thing', { timeLimitMs: 5000, successCriteria: 'done' });
+  check('delegate without target fails clearly',
+    noTarget.ok === false && (noTarget.error ?? '').includes('HERMES_DELEGATION_TARGET'));
+
+  // 29b — full round-trip: send goal, skip our echo, return the agent reply.
+  const delegBridge = new HermesBridge({
+    url: delegUrl,
+    delegationTarget: 'telegram:12345',
+    delegationSessionKey: 'sess-1',
+    timeoutMs: 2000,
+  });
+  const outcome = await delegBridge.delegate(
+    'reply with PONG',
+    { timeLimitMs: 5000, successCriteria: 'reply contains PONG', maxResourceUnits: 3 },
+    'sandbox test',
+  );
+  check('delegation round-trip succeeds', outcome.ok === true);
+  check('agent reply returned (echo skipped via token)',
+    outcome.ok === true && (outcome.summary ?? '').includes('PONG'));
+  check('summary is the reply, not our own echo',
+    !(outcome.summary ?? '').includes('TASK ['));
+  check('hermesRef carries session:cursor of the reply', outcome.hermesRef === 'sess-1:52');
+  check('messages_send used the configured target',
+    delegRequests.some(r => r.name === 'messages_send' && r.args.target === 'telegram:12345'));
+  check('sent goal embedded bounds (success criteria + time limit)',
+    sentMessage.includes('SUCCESS CRITERIA') && sentMessage.includes('TIME LIMIT'));
+  check('cursor snapshot taken before send (events_poll first)',
+    delegRequests[0]?.name === 'events_poll');
+
+  await new Promise<void>(resolve => delegServer.close(() => resolve()));
+
+  // 29c — no agent listening → bounded wait elapses into a clean timeout error.
+  const silentServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const parsed = JSON.parse(body) as { method: string; params?: { name?: string }; id?: number };
+      const respond = (result: unknown) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result }));
+      };
+      if (parsed.method === 'initialize') respond({ protocolVersion: '2025-06-18' });
+      else respond({ content: [{ type: 'text', text: JSON.stringify({ events: [], next_cursor: 0 }) }] });
+    });
+  });
+  await new Promise<void>(resolve => silentServer.listen(0, '127.0.0.1', resolve));
+  const silentPort = (silentServer.address() as { port: number }).port;
+  const silentBridge = new HermesBridge({
+    url: `http://127.0.0.1:${silentPort}/mcp`,
+    delegationTarget: 'telegram:12345',
+    timeoutMs: 2000,
+  });
+  const timedOut = await silentBridge.delegate('never answered', { timeLimitMs: 350, successCriteria: 'n/a' });
+  check('delegation with no agent reply times out cleanly',
+    timedOut.ok === false && (timedOut.error ?? '').includes('no agent reply within'));
+  await new Promise<void>(resolve => silentServer.close(() => resolve()));
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 

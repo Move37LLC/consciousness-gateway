@@ -73,10 +73,16 @@ export interface HermesBridgeConfig {
   toolMap?: Partial<Record<HermesCapability, string>>;
   /** Per-call timeout in ms. Default 30s. */
   timeoutMs?: number;
-  /** MCP tool name that accepts a delegated goal. MUST be verified against the
-   *  installed Hermes' `mcp serve` schema on the deployment host. Default
-   *  'messages_send' (Hermes' real surface is messaging-shaped). */
-  delegationTool?: string;
+  /** Delegation channel target — the `"platform:chat_id"` string a running
+   *  Hermes AGENT watches and treats as a task queue. Hermes' real delegation
+   *  surface is `messages_send(target, message)` → agent reply observed via
+   *  `events_wait`. Env: `HERMES_DELEGATION_TARGET`. Delegation is disabled
+   *  (returns a clear error) until this is set. */
+  delegationTarget?: string;
+  /** Optional session_key scoping `events_poll`/`events_wait` to the delegation
+   *  conversation (from Hermes' `conversations_list`). When omitted, events are
+   *  read unscoped. Env: `HERMES_DELEGATION_SESSION_KEY`. */
+  delegationSessionKey?: string;
   /** Serialize outbound JSON-RPC so only one request is in flight at a time
    *  over the session's stdio pipe — guarantees strict request/response
    *  pairing through agentgateway. Default true. Set false only if a future
@@ -136,6 +142,8 @@ export class HermesBridge implements HermesDelegator {
     this.config = {
       url: process.env.HERMES_MCP_URL,
       authToken: process.env.HERMES_AUTH_TOKEN,
+      delegationTarget: process.env.HERMES_DELEGATION_TARGET,
+      delegationSessionKey: process.env.HERMES_DELEGATION_SESSION_KEY,
       timeoutMs: 30_000,
       serializeRequests: true,
       ...(config ?? {}),
@@ -293,34 +301,88 @@ export class HermesBridge implements HermesDelegator {
    * Delegate a bounded goal to Hermes' agent loop (Gateway = mind, Hermes =
    * body). The Gateway supplies the what/why; Hermes selects the means.
    *
-   * Transport caveat: this routes the goal through a single configurable MCP
-   * tool (`delegationTool`, default 'messages_send'). The real Hermes surface
-   * is stdio + messaging, and asynchronous goal completion is observed by
-   * polling Hermes' events — that round-trip MUST be wired and verified
-   * against the live `hermes mcp serve` schema on the deployment host. Until
-   * then this returns the dispatch acknowledgement as the outcome.
+   * Transport (verified against `NousResearch/hermes-agent` `mcp_serve.py`):
+   * the embedded MCP surface is MESSAGING-shaped, not an `agent.run` endpoint.
+   * Delegation is therefore a send→poll round-trip over a dedicated channel a
+   * running Hermes AGENT watches as a task queue:
+   *
+   *   1. Snapshot the event cursor so we only read replies AFTER our send.
+   *   2. `messages_send(target, message)` — the goal + bounds, carrying a unique
+   *      correlation token so we can distinguish the agent's reply from the
+   *      echo of our own message WITHOUT depending on Hermes' (deployment-
+   *      specific) event direction/role field names (§8 Q3 of the verification
+   *      plan recommends exactly this token fallback).
+   *   3. `events_wait(after_cursor, session_key?, timeout_ms)` in a loop until
+   *      the bound's deadline; the first inbound message that is NOT our own
+   *      echo is the result.
+   *
+   * Runs OFF the 1s tick (executor fires it in the background), so the blocking
+   * wait here never stalls the consciousness loop. Every failure mode preserves
+   * its reason verbatim for the gateway's failure-transparency percept (Cond 4).
+   *
+   * Live-host note: tool NAMES are confirmed; the exact event/cursor FIELD names
+   * are tolerant-parsed (see helpers) and the token is the primary correlation
+   * key, so this works without re-confirming the schema. §1 of the plan can
+   * still tighten field extraction once introspected on the Mac mini.
    */
   async delegate(goal: string, bounds: DelegationBounds, context?: string): Promise<DelegationOutcome> {
     if (!this.available) {
       return { ok: false, error: 'Hermes delegator not configured (HERMES_MCP_URL unset)' };
     }
+    const target = this.config.delegationTarget;
+    if (!target) {
+      return { ok: false, error: 'Hermes delegation target unset (HERMES_DELEGATION_TARGET)' };
+    }
+    const session = this.config.delegationSessionKey;
+    const sessionArg = session ? { session_key: session } : {};
 
-    const tool = this.config.delegationTool ?? 'messages_send';
-    const result = await this.callTool(tool, {
-      goal,
-      successCriteria: bounds.successCriteria,
-      timeLimitMs: bounds.timeLimitMs,
-      maxResourceUnits: bounds.maxResourceUnits,
-      context,
-    });
+    // 1. Snapshot the cursor — only replies after this point count as ours.
+    const poll0 = await this.callTool('events_poll', { ...sessionArg, after_cursor: 0, limit: 1 });
+    if (!poll0.ok) {
+      return { ok: false, error: `${poll0.reason}${poll0.detail ? ': ' + poll0.detail : ''}` };
+    }
+    let cursor = extractCursor(poll0.raw) ?? 0;
 
-    if (!result.ok) {
-      // Preserve the full reason + detail verbatim (Condition 4).
-      const error = `${result.reason}${result.detail ? ': ' + result.detail : ''}`;
-      return { ok: false, error };
+    // 2. Send the goal. Bounds ride in the text so the agent knows the success
+    //    criteria + budget; the token lets us skip our own echo in step 3.
+    const token = correlationToken();
+    const message =
+      `TASK [${token}]: ${goal}\n` +
+      `SUCCESS CRITERIA: ${bounds.successCriteria}\n` +
+      `TIME LIMIT: ${Math.round(bounds.timeLimitMs / 1000)}s` +
+      (bounds.maxResourceUnits ? `\nRESOURCE LIMIT: ${bounds.maxResourceUnits} units` : '') +
+      (context ? `\nCONTEXT: ${context}` : '');
+
+    const send = await this.callTool('messages_send', { target, message });
+    if (!send.ok) {
+      return { ok: false, error: `${send.reason}${send.detail ? ': ' + send.detail : ''}` };
     }
 
-    return { ok: true, summary: result.content || 'delegation acknowledged', hermesRef: undefined };
+    // 3. Wait for the agent's reply, bounded by the delegation's time limit.
+    const deadline = Date.now() + bounds.timeLimitMs;
+    while (Date.now() < deadline) {
+      // events_wait caps server-side at 5 min; never wait past our own deadline.
+      const remaining = Math.min(deadline - Date.now(), 300_000);
+      const res = await this.callTool('events_wait', {
+        ...sessionArg,
+        after_cursor: cursor,
+        timeout_ms: remaining,
+      });
+      if (!res.ok) {
+        // A transport timeout slice is benign — keep waiting until the deadline.
+        if (res.reason === 'timeout') continue;
+        return { ok: false, error: `${res.reason}${res.detail ? ': ' + res.detail : ''}` };
+      }
+      const events = extractEvents(res.raw);
+      if (events.length === 0) continue; // server wait elapsed empty → loop
+      cursor = maxCursor(events, cursor);
+      const reply = pickAgentReply(events, token);
+      if (reply) {
+        const ref = session ? `${session}:${reply.cursor}` : String(reply.cursor);
+        return { ok: true, summary: reply.text || 'delegation completed', hermesRef: ref };
+      }
+    }
+    return { ok: false, error: `no agent reply within ${bounds.timeLimitMs}ms` };
   }
 
   // ─── Status ────────────────────────────────────────────────────────
@@ -546,4 +608,115 @@ function extractContent(raw: unknown): string {
     }
   }
   return parts.join('\n').trim();
+}
+
+// ─── Delegation round-trip helpers ───────────────────────────────────
+//
+// Hermes' `events_poll`/`events_wait` return their payload as MCP text content;
+// the exact field names (cursor, event shape, direction marker) are deployment-
+// specific, so every extractor below is deliberately tolerant of common aliases.
+
+/** Short, unique token embedded in a delegated goal so the agent's reply can be
+ *  told apart from the echo of our own sent message — independent of schema. */
+function correlationToken(): string {
+  const g = globalThis as { crypto?: { randomUUID?: () => string } };
+  if (typeof g.crypto?.randomUUID === 'function') return g.crypto.randomUUID().slice(0, 8);
+  return Math.random().toString(36).slice(2, 10);
+}
+
+/** Unwrap an MCP tool result into its JSON payload. Hermes wraps the events
+ *  JSON inside a `content[].text` block; fall back to the raw object/array. */
+function unwrapPayload(raw: unknown): unknown {
+  if (raw && typeof raw === 'object' && Array.isArray((raw as { content?: unknown[] }).content)) {
+    const text = extractContent(raw);
+    if (text) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text; // plain-text reply, not JSON
+      }
+    }
+  }
+  return raw;
+}
+
+interface NormEvent {
+  cursor: number;
+  text: string;
+  outbound: boolean;
+  raw: Record<string, unknown>;
+}
+
+function asNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return undefined;
+}
+
+/** Pull a cursor value out of an events payload (next_cursor / nextCursor /
+ *  cursor), else the largest per-event cursor seen. */
+function extractCursor(raw: unknown): number | undefined {
+  const p = unwrapPayload(raw);
+  if (p && typeof p === 'object' && !Array.isArray(p)) {
+    const o = p as Record<string, unknown>;
+    const c = asNumber(o.next_cursor) ?? asNumber(o.nextCursor) ?? asNumber(o.cursor);
+    if (c !== undefined) return c;
+  }
+  const evs = extractEvents(raw);
+  return evs.length ? maxCursor(evs, 0) : undefined;
+}
+
+/** Normalize an events payload into a flat list of {cursor, text, outbound}. */
+function extractEvents(raw: unknown): NormEvent[] {
+  const p = unwrapPayload(raw);
+  let list: unknown[] = [];
+  if (Array.isArray(p)) {
+    list = p;
+  } else if (p && typeof p === 'object') {
+    const o = p as Record<string, unknown>;
+    if (Array.isArray(o.events)) list = o.events;
+    else if (Array.isArray(o.data)) list = o.data as unknown[];
+    else if (Array.isArray(o.messages)) list = o.messages;
+  }
+  const out: NormEvent[] = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const ev = e as Record<string, unknown>;
+    const data = (ev.data && typeof ev.data === 'object' ? ev.data : ev) as Record<string, unknown>;
+    const cursor =
+      asNumber(ev.cursor) ?? asNumber(ev.id) ?? asNumber(ev.seq) ?? asNumber(ev.after_cursor) ?? 0;
+    const text =
+      pickString(data.text) ??
+      pickString(data.message) ??
+      pickString(data.content) ??
+      pickString(ev.text) ??
+      '';
+    const dir = (pickString(data.direction) ?? pickString(data.role) ?? pickString(data.sender) ??
+      pickString(data.from) ?? '').toLowerCase();
+    const outbound =
+      data.is_outbound === true || data.outbound === true ||
+      dir === 'outbound' || dir === 'out' || dir === 'sent' || dir === 'user' || dir === 'self';
+    out.push({ cursor, text, outbound, raw: ev });
+  }
+  return out;
+}
+
+function pickString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+function maxCursor(events: NormEvent[], fallback: number): number {
+  return events.reduce((m, e) => (e.cursor > m ? e.cursor : m), fallback);
+}
+
+/** The first inbound message that is NOT the echo of our own send (identified
+ *  by the correlation token) — that is the agent's reply. */
+function pickAgentReply(events: NormEvent[], token: string): { text: string; cursor: number } | null {
+  for (const e of events) {
+    if (e.outbound) continue;             // our own message direction
+    if (e.text.includes(token)) continue; // echo of our send (token rides in it)
+    if (!e.text) continue;                // non-message / empty event
+    return { text: e.text, cursor: e.cursor };
+  }
+  return null;
 }

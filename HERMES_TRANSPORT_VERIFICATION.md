@@ -160,10 +160,32 @@ result.")
 
 ---
 
-## 4. Step 4 — Reimplement `HermesBridge.delegate()` (~30 min)
+## 4. Step 4 — Reimplement `HermesBridge.delegate()` ✅ DONE (2026-06-03)
 
-Replace the stubbed adapter with the real send→poll round-trip. Corrected
-against the actual signatures (`messages_send(target, message)`):
+**Status: implemented and tested off-host.** `src/agents/providers/hermes.ts`
+now does the real send→poll round-trip below; `src/test.ts` Test 29 verifies it
+against a mock messaging server (echo-skip via correlation token, agent-reply
+return, `hermesRef = session:cursor`, target-unset error, and no-reply timeout).
+Build + suite green (179/179). What remains is purely live-host confirmation
+(§1 field names) and standing up the channel + agent (§3) — no more code.
+
+Key deltas from the original sketch:
+- Config: dropped the wrong `delegationTool`; added `delegationTarget`
+  (`HERMES_DELEGATION_TARGET`) and `delegationSessionKey`
+  (`HERMES_DELEGATION_SESSION_KEY`). Delegation returns a clear error until a
+  target is set.
+- **Reply correlation is token-based, not field-based.** A unique token rides in
+  the sent message; the agent's reply is the first inbound event that neither
+  contains the token (our echo) nor is marked outbound. This is §8 Q3's fallback,
+  chosen so the bridge does NOT depend on Hermes' deployment-specific event
+  field names. Cursor/event extraction (`extractCursor`/`extractEvents`) still
+  tolerates the common aliases (`next_cursor`/`cursor`, `direction`/`role`/
+  `sender`, `text`/`message`/`content`).
+- Bounded wait slices `events_wait` under its 5-min server cap and treats a
+  transport timeout as "keep waiting" until `bounds.timeLimitMs`.
+
+Reference implementation (the sketch the code follows; signatures corrected to
+`messages_send(target, message)`):
 
 ```ts
 async delegate(goal, bounds, context): Promise<DelegationOutcome> {
@@ -203,10 +225,11 @@ async delegate(goal, bounds, context): Promise<DelegationOutcome> {
 
 Config additions to `HermesBridgeConfig`: `delegationTarget`, `delegationSessionKey`
 (env: `HERMES_DELEGATION_TARGET`, `HERMES_DELEGATION_SESSION_KEY`). Drop the
-`delegationTool`/`messages_send`-with-goal-args path — it was wrong.
+`delegationTool`/`messages_send`-with-goal-args path — it was wrong. ✅ done.
 
-- [ ] `isAgentReply()` filters out the echo of our own message (per §1 fields).
-- [ ] No change to `executeDelegation()` — it already fires `delegate()` async
+- [x] `pickAgentReply()` filters out the echo of our own message — via the
+      correlation token (primary) plus an outbound-direction heuristic (aliases).
+- [x] No change to `executeDelegation()` — it already fires `delegate()` async
       and the result settles into a percept.
 
 ---
@@ -258,7 +281,7 @@ The Gateway is a long-lived process at tick ~6.3M. Protect it.
 [ ] §1 introspect live schema; record exact event/cursor fields
 [ ] §2 stand up adapter (Option A); confirm tools/list via HTTP
 [ ] §3 confirm agent running; resolve + set delegation target/session_key
-[ ] §4 apply corrected delegate(); npm run build; npm test (expect 164/164)
+[x] §4 corrected delegate() implemented + tested off-host (179/179) — 2026-06-03
 [ ] §5 run scenarios 2,3,4 (safety) then 1,5,6 (function + audit + integrity)
 [ ] Set HERMES_MCP_URL + restart Gateway on the lull
 [ ] Watch 5 min: ticks advance, a real delegation completes, audit row correct
