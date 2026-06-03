@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Hermes-ONLY overlay — Phase 0, NATIVE (no Docker), local delegation channel
+# ─────────────────────────────────────────────────────────────────────────────
+# Smallest possible blast radius for Kern's first live validation: ONE target
+# (hermes mcp serve), run as a native agentgateway binary on the same host/user
+# as Hermes so it shares ~/.hermes (the session store the agent also reads) and
+# finds `hermes` on PATH. No filesystem/git/fetch/time federation here — add
+# those back via the full agentgateway.yaml once the delegation round-trip is
+# proven on the local channel.
+#
+# Run (Mac Mini, same user that ran `hermes setup`):
+#   agentgateway -f deploy/hermes-overlay/agentgateway-hermes-only.yaml
+#
+# Then the consciousness-gateway points at it:
+#   HERMES_MCP_URL=http://127.0.0.1:3000/mcp
+#
+# SAFE ONLY on loopback. Port 3000 must stay bound to 127.0.0.1 — there is no
+# inbound auth here (loopback trust). Do not expose beyond localhost.
+
+config:
+  adminAddr: "127.0.0.1:15000"     # admin UI / introspection (loopback only)
+  statsAddr: "127.0.0.1:15020"     # Prometheus metrics at :15020/metrics
+  logging:
+    level: "info"                  # bump to "info,mcp=debug" while validating
+    format: json
+
+binds:
+- port: 3000
+  listeners:
+  - name: mcp-listener
+    protocol: HTTP
+    routes:
+    - name: mcp-hermes
+      matches:
+      - path:
+          pathPrefix: /mcp
+      policies:
+        cors:
+          allowOrigins: ["*"]
+          allowHeaders:
+          - mcp-protocol-version
+          - content-type
+          - cache-control
+          - authorization
+          exposeHeaders:
+          - "Mcp-Session-Id"
+      backends:
+      - mcp:
+          targets:
+          # The embedded Hermes MCP server is stdio-only and messaging-shaped
+          # (messages_send / events_poll / events_wait …). agentgateway spawns
+          # it as a child and pins it per Mcp-Session-Id, which is exactly what
+          # HermesBridge replays. Tools are exposed NAMESPACED by target name:
+          # hermes_messages_send, hermes_events_wait, etc. So the consciousness-
+          # gateway MUST set HERMES_TOOL_PREFIX=hermes_ — confirm the exact names
+          # against this overlay's tools/list before the first delegation.
+          - name: hermes
+            stdio:
+              cmd: hermes
+              args: ["mcp", "serve"]

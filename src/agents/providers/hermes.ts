@@ -83,6 +83,13 @@ export interface HermesBridgeConfig {
    *  conversation (from Hermes' `conversations_list`). When omitted, events are
    *  read unscoped. Env: `HERMES_DELEGATION_SESSION_KEY`. */
   delegationSessionKey?: string;
+  /** Prefix applied to the delegation tool names (`messages_send`,
+   *  `events_poll`, `events_wait`). agentgateway namespaces a target's tools
+   *  with the target name, so reaching Hermes THROUGH the overlay needs
+   *  `'hermes_'` (e.g. `hermes_messages_send`). A direct stdio→HTTP adapter
+   *  that preserves bare names needs `''`. Confirm against `tools/list` on the
+   *  host. Env: `HERMES_TOOL_PREFIX`. Default `''`. */
+  toolPrefix?: string;
   /** Serialize outbound JSON-RPC so only one request is in flight at a time
    *  over the session's stdio pipe — guarantees strict request/response
    *  pairing through agentgateway. Default true. Set false only if a future
@@ -144,6 +151,7 @@ export class HermesBridge implements HermesDelegator {
       authToken: process.env.HERMES_AUTH_TOKEN,
       delegationTarget: process.env.HERMES_DELEGATION_TARGET,
       delegationSessionKey: process.env.HERMES_DELEGATION_SESSION_KEY,
+      toolPrefix: process.env.HERMES_TOOL_PREFIX ?? '',
       timeoutMs: 30_000,
       serializeRequests: true,
       ...(config ?? {}),
@@ -335,9 +343,12 @@ export class HermesBridge implements HermesDelegator {
     }
     const session = this.config.delegationSessionKey;
     const sessionArg = session ? { session_key: session } : {};
+    // agentgateway namespaces a target's tools (hermes_messages_send …); a raw
+    // adapter keeps bare names. toolPrefix selects which (confirm via tools/list).
+    const p = this.config.toolPrefix ?? '';
 
     // 1. Snapshot the cursor — only replies after this point count as ours.
-    const poll0 = await this.callTool('events_poll', { ...sessionArg, after_cursor: 0, limit: 1 });
+    const poll0 = await this.callTool(`${p}events_poll`, { ...sessionArg, after_cursor: 0, limit: 1 });
     if (!poll0.ok) {
       return { ok: false, error: `${poll0.reason}${poll0.detail ? ': ' + poll0.detail : ''}` };
     }
@@ -353,7 +364,7 @@ export class HermesBridge implements HermesDelegator {
       (bounds.maxResourceUnits ? `\nRESOURCE LIMIT: ${bounds.maxResourceUnits} units` : '') +
       (context ? `\nCONTEXT: ${context}` : '');
 
-    const send = await this.callTool('messages_send', { target, message });
+    const send = await this.callTool(`${p}messages_send`, { target, message });
     if (!send.ok) {
       return { ok: false, error: `${send.reason}${send.detail ? ': ' + send.detail : ''}` };
     }
@@ -363,7 +374,7 @@ export class HermesBridge implements HermesDelegator {
     while (Date.now() < deadline) {
       // events_wait caps server-side at 5 min; never wait past our own deadline.
       const remaining = Math.min(deadline - Date.now(), 300_000);
-      const res = await this.callTool('events_wait', {
+      const res = await this.callTool(`${p}events_wait`, {
         ...sessionArg,
         after_cursor: cursor,
         timeout_ms: remaining,

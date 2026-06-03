@@ -973,12 +973,15 @@ async function test() {
         const name = parsed.params?.name ?? '';
         const args = parsed.params?.arguments ?? {};
         delegRequests.push({ name, args });
-        if (name === 'events_poll') {
+        // Accept both bare and agentgateway-namespaced (hermes_) tool names so
+        // the same mock exercises the toolPrefix plumbing.
+        const bare = name.replace(/^hermes_/, '');
+        if (bare === 'events_poll') {
           asText({ events: [], next_cursor: 50 });
-        } else if (name === 'messages_send') {
+        } else if (bare === 'messages_send') {
           sentMessage = String(args.message ?? '');
           asText({ ok: true, queued: true });
-        } else if (name === 'events_wait') {
+        } else if (bare === 'events_wait') {
           if (sentMessage) {
             asText({ events: [
               // echo of our own send: token present, no direction field
@@ -1032,6 +1035,20 @@ async function test() {
     sentMessage.includes('SUCCESS CRITERIA') && sentMessage.includes('TIME LIMIT'));
   check('cursor snapshot taken before send (events_poll first)',
     delegRequests[0]?.name === 'events_poll');
+
+  // 29b' — toolPrefix routes through agentgateway-namespaced tool names.
+  sentMessage = '';
+  delegRequests.length = 0;
+  const prefixedBridge = new HermesBridge({
+    url: delegUrl,
+    delegationTarget: 'local:gateway-delegation',
+    toolPrefix: 'hermes_',
+    timeoutMs: 2000,
+  });
+  const prefixed = await prefixedBridge.delegate('reply with PONG', { timeLimitMs: 5000, successCriteria: 'PONG' });
+  check('prefixed (hermes_) tool names round-trip', prefixed.ok === true && (prefixed.summary ?? '').includes('PONG'));
+  check('overlay saw namespaced messages_send',
+    delegRequests.some(r => r.name === 'hermes_messages_send'));
 
   await new Promise<void>(resolve => delegServer.close(() => resolve()));
 
