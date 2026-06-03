@@ -42,11 +42,13 @@ curl -fsS -X POST "$URL" \
 echo
 
 # 5) git_status — verify the git target sees the Gateway's own repo (Create drive).
-echo ">> tools/call git_status:"
+#    Name is DOUBLE-prefixed: agentgateway adds the target name ("git_"), and
+#    mcp-server-git already prefixes its own tools ("git_status") → git_git_status.
+echo ">> tools/call git_git_status:"
 curl -fsS -X POST "$URL" \
   -H 'Content-Type: application/json' -H "Accept: ${ACCEPT}" \
   ${SID:+-H "Mcp-Session-Id: ${SID}"} \
-  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"git_status","arguments":{"repo_path":"/repo"}}}'
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"git_git_status","arguments":{"repo_path":"/repo"}}}'
 echo
 
 echo ">> probe complete; idling so you can exec further curls into this container."
