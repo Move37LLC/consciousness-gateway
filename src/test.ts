@@ -895,6 +895,21 @@ async function test() {
   check('no delegation when no drive is hungry',
     satedEngine.formDelegationIntentions(mkPercept(9000, 0.2), [{ id: 'learn' as const, currentNeed: 0.3 }]).length === 0);
 
+  // Env-tunable cadence: a stricter arousal ceiling must take effect at construction.
+  const savedCeiling = process.env.DELEGATION_AROUSAL_CEILING;
+  process.env.DELEGATION_AROUSAL_CEILING = '0.1';
+  const tunedEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  check('env override tightens the arousal ceiling (no delegate at 0.2 when ceiling=0.1)',
+    tunedEngine.formDelegationIntentions(mkPercept(9000, 0.2), [{ id: 'learn' as const, currentNeed: 0.95 }]).length === 0);
+  if (savedCeiling === undefined) delete process.env.DELEGATION_AROUSAL_CEILING;
+  else process.env.DELEGATION_AROUSAL_CEILING = savedCeiling;
+
+  // Default conservative spec carries a per-task resource cap (bounds the 150-iter risk).
+  const capEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  const capForm = capEngine.formDelegationIntentions(mkPercept(12000, 0.2), [{ id: 'learn' as const, currentNeed: 0.95 }]);
+  check('delegation spec carries a maxResourceUnits cap',
+    (capForm[0]?.action.payload?.delegation as DelegationSpec)?.bounds.maxResourceUnits === 20);
+
   // ── Test 28: Request serialization (strict stdio request/response pairing) ──
   section('Test 28: Hermes bridge serializes concurrent calls (no interleaving)');
 

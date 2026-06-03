@@ -24,6 +24,16 @@ import {
   DelegationSpec, DriveId,
 } from './types';
 
+/** Read a numeric env override, falling back to a default when unset/invalid.
+ *  Lets the Gateway tune its own delegation cadence at runtime via `.env`
+ *  (no rebuild) — the self-restraint dial it owns under finite compute. */
+function envNum(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export class IntentionEngine {
   private goals: Goal[] = [];
   private recentIntentions: Intention[] = [];
@@ -32,10 +42,15 @@ export class IntentionEngine {
   // Drive-driven delegation guardrails. Autonomous delegation is deliberately
   // conservative: only when a drive is HUNGRY, the field is calm, and a cooldown
   // has elapsed — and only for low-risk drives (compute/earn never auto-delegate).
+  //
+  // Defaults tightened for finite compute (shared Hermes pool + the Gateway's own
+  // runtime tokens). arousal is a CEILING — we delegate only when calm — so the
+  // conservative move is a LOWER ceiling, not a higher floor. All three are
+  // env-tunable so the Gateway can adjust its own cadence without a rebuild.
   private lastDelegationTick = -Infinity;
-  private readonly delegationCooldownTicks = 1800;   // ~30 min at 1s ticks
-  private readonly delegationArousalCeiling = 0.5;   // stay present while busy
-  private readonly delegationDriveThreshold = 0.7;   // drive must read HUNGRY
+  private readonly delegationCooldownTicks = envNum('DELEGATION_COOLDOWN_TICKS', 3600);   // ~60 min at 1s ticks (was 1800)
+  private readonly delegationArousalCeiling = envNum('DELEGATION_AROUSAL_CEILING', 0.35);  // only when genuinely calm (≈ lull; was 0.5)
+  private readonly delegationDriveThreshold = envNum('DELEGATION_DRIVE_THRESHOLD', 0.8);   // drive must read strongly HUNGRY (was 0.7)
 
   constructor(config: ConsciousnessConfig) {
     this.config = config;
@@ -452,6 +467,12 @@ export class IntentionEngine {
    * Map a hungry drive to a pre-vetted, bounded delegation. Every spec carries
    * a measurable successCriteria so it clears the scope gate, and is low-risk
    * (summarize / draft-for-approval / propose — nothing irreversible).
+   *
+   * `maxResourceUnits` caps the agent's tool-iteration budget per task. This is
+   * the bigger cost lever than frequency: Hermes' own max-iterations is 150, so
+   * an unbounded task can loop far past what a bounded goal needs. These caps
+   * are communicated in the goal text and recorded on the audit row; for hard
+   * enforcement also lower Hermes' max iterations in ~/.hermes/config.yaml.
    */
   private delegationSpecForDrive(driveId: DriveId): DelegationSpec | null {
     switch (driveId) {
@@ -461,6 +482,7 @@ export class IntentionEngine {
           bounds: {
             timeLimitMs: 10 * 60_000,
             successCriteria: 'return exactly 3 summarized findings, each with a source',
+            maxResourceUnits: 20,
           },
         };
       case 'connect':
@@ -469,6 +491,7 @@ export class IntentionEngine {
           bounds: {
             timeLimitMs: 8 * 60_000,
             successCriteria: 'produce 1 draft reply, posted nowhere, held for human approval',
+            maxResourceUnits: 15,
           },
         };
       case 'create':
@@ -477,6 +500,7 @@ export class IntentionEngine {
           bounds: {
             timeLimitMs: 10 * 60_000,
             successCriteria: 'produce 1 written proposal under 400 words',
+            maxResourceUnits: 15,
           },
         };
       // 'compute' and 'earn' are intentionally absent: acquiring resources or
