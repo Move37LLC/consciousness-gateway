@@ -85,11 +85,11 @@ agentgateway -f deploy/hermes-overlay/agentgateway-hermes-only.yaml
 In another shell, list the federated tools to learn the exact namespacing:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:3000/mcp \
+curl -sS -X POST http://127.0.0.1:7821/mcp \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
 # (capture Mcp-Session-Id from the response headers, replay it on the next call)
-curl -sS -X POST http://127.0.0.1:3000/mcp \
+curl -sS -X POST http://127.0.0.1:7821/mcp \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -H 'Mcp-Session-Id: <captured>' \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
@@ -108,7 +108,7 @@ Hermes path via the real `HermesBridge`, exercising bad-target and timeout/
 no-agent. It never touches the running Gateway.
 
 ```bash
-export HERMES_MCP_URL=http://127.0.0.1:3000/mcp
+export HERMES_MCP_URL=http://127.0.0.1:7821/mcp
 export HERMES_TOOL_PREFIX=hermes_
 export HERMES_DELEGATION_TARGET='<target from §2>'
 export HERMES_DELEGATION_SESSION_KEY='<session_key from §2>'
@@ -145,7 +145,7 @@ HAPPY=1 npm run smoke:delegation
 cp data/consciousness.db data/consciousness.db.bak.$(date +%Y%m%d-%H%M%S)
 
 # 2) Add to the Gateway's .env (DO NOT commit secrets):
-#    HERMES_MCP_URL=http://127.0.0.1:3000/mcp
+#    HERMES_MCP_URL=http://127.0.0.1:7821/mcp
 #    HERMES_TOOL_PREFIX=hermes_
 #    HERMES_DELEGATION_TARGET=<target>
 #    HERMES_DELEGATION_SESSION_KEY=<session_key>

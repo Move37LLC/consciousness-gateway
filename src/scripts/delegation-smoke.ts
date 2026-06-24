@@ -13,8 +13,9 @@
  *   Scenario 3 — happy path      : opt-in (HAPPY=1) → real agent replies PONG
  *
  * Usage (on the Mac Mini):
- *   HERMES_MCP_URL=http://127.0.0.1:3000/mcp \
- *   HERMES_DELEGATION_TARGET=local:gateway-delegation \
+ *   HERMES_MCP_URL=http://127.0.0.1:7821/mcp \
+ *   HERMES_TOOL_PREFIX=hermes_ \
+ *   HERMES_DELEGATION_TARGET=<target from channels_list> \
  *   HERMES_DELEGATION_SESSION_KEY=<from conversations_list> \
  *   npx ts-node src/scripts/delegation-smoke.ts
  *
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
   line('\n  ===== Delegation smoke test (live overlay → Hermes) =====\n');
 
   if (!url) {
-    line('  HERMES_MCP_URL is not set — point it at the overlay (e.g. http://127.0.0.1:3000/mcp).');
+    line('  HERMES_MCP_URL is not set — point it at the overlay (e.g. http://127.0.0.1:7821/mcp).');
     process.exit(2);
   }
 

@@ -14,10 +14,12 @@
 #   agentgateway -f deploy/hermes-overlay/agentgateway-hermes-only.yaml
 #
 # Then the consciousness-gateway points at it:
-#   HERMES_MCP_URL=http://127.0.0.1:3000/mcp
+#   HERMES_MCP_URL=http://127.0.0.1:7821/mcp
 #
-# SAFE ONLY on loopback. Port 3000 must stay bound to 127.0.0.1 — there is no
-# inbound auth here (loopback trust). Do not expose beyond localhost.
+# Port 7821 (NOT 3000): the consciousness-gateway dashboard owns 3000 on this
+# host, so the overlay must not collide with it. SAFE ONLY on loopback. Port
+# 7821 must stay bound to 127.0.0.1 — there is no inbound auth here (loopback
+# trust). Do not expose beyond localhost.
 
 config:
   adminAddr: "127.0.0.1:15000"     # admin UI / introspection (loopback only)
@@ -27,7 +29,7 @@ config:
     format: json
 
 binds:
-- port: 3000
+- port: 7821
   listeners:
   - name: mcp-listener
     protocol: HTTP
