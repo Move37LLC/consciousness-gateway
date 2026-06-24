@@ -76,13 +76,24 @@ export class AnthropicProvider implements ModelProviderInterface {
     }
     messages.push({ role: 'user', content: prompt });
 
-    const response = await client.messages.create({
+    const baseParams = {
       model: this.resolveModel(model),
       max_tokens: options?.maxTokens ?? 1024,
-      temperature: options?.temperature ?? 0.7,
       system: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
       messages,
-    });
+    };
+    const temperature = options?.temperature ?? 0.7;
+    let response: Anthropic.Message;
+    try {
+      response = await client.messages.create({ ...baseParams, temperature });
+    } catch (err) {
+      // Newer Anthropic models deprecate `temperature`; retry without it.
+      if (err instanceof Error && err.message.includes('temperature')) {
+        response = await client.messages.create(baseParams);
+      } else {
+        throw err;
+      }
+    }
 
     const textBlock = response.content.find(b => b.type === 'text');
     const content = textBlock && 'text' in textBlock ? textBlock.text : '';
@@ -98,9 +109,9 @@ export class AnthropicProvider implements ModelProviderInterface {
 
   private resolveModel(model: string): string {
     const mapping: Record<string, string> = {
-      'claude-opus-4': 'claude-opus-4-20250514',
-      'claude-sonnet-4': 'claude-sonnet-4-20250514',
-      'claude-haiku-3.5': 'claude-3-5-haiku-20241022',
+      'claude-opus-4': 'claude-opus-4-8',
+      'claude-sonnet-4': 'claude-sonnet-4-6',
+      'claude-haiku-3.5': 'claude-haiku-4-5-20251001',
     };
     return mapping[model] ?? model;
   }
