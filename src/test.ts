@@ -968,8 +968,11 @@ async function test() {
 
   // Mock the messaging surface: events_poll (cursor snapshot), messages_send
   // (captures our outbound text), events_wait (returns the echo of our send +
-  // the agent's reply). The echo carries the correlation token but NO direction
-  // marker, so a correct bridge must skip it via the token alone.
+  // the agent's reply). Deliberately hostile to direction filtering (F3):
+  // the agent's reply is tagged OUTBOUND — as Hermes really tags bot-delivered
+  // replies — so a correct bridge must correlate on the RESULT [token] marker
+  // alone. The echo also contains the literal RESULT [token] (inside the
+  // reply-format instruction), so the bridge must exclude it via TASK [token].
   let sentMessage = '';
   const delegRequests: Array<{ name: string; args: Record<string, unknown> }> = [];
   const delegServer = http.createServer((req, res) => {
@@ -998,11 +1001,16 @@ async function test() {
           asText({ ok: true, queued: true });
         } else if (bare === 'events_wait') {
           if (sentMessage) {
+            const tok = /TASK \[([^\]]+)\]/.exec(sentMessage)?.[1] ?? '';
             asText({ events: [
-              // echo of our own send: token present, no direction field
+              // echo of our own send: contains TASK [tok] AND the literal
+              // RESULT [tok] reply-format instruction — must be skipped.
               { cursor: 51, data: { text: sentMessage } },
-              // the agent's reply: inbound, no token
-              { cursor: 52, data: { direction: 'inbound', text: 'PONG — task complete' } },
+              // unrelated outbound chatter with no marker — must be skipped.
+              { cursor: 52, data: { direction: 'outbound', text: 'unrelated bot message' } },
+              // the agent's REAL reply — tagged OUTBOUND (bot-delivered), so a
+              // direction filter would wrongly discard it (the F3 bug).
+              { cursor: 53, data: { direction: 'outbound', text: `RESULT [${tok}]: PONG — task complete` } },
             ] });
           } else {
             asText({ events: [] });
@@ -1039,15 +1047,19 @@ async function test() {
     'sandbox test',
   );
   check('delegation round-trip succeeds', outcome.ok === true);
-  check('agent reply returned (echo skipped via token)',
+  check('OUTBOUND-tagged agent reply is accepted via RESULT marker (F3 fix)',
     outcome.ok === true && (outcome.summary ?? '').includes('PONG'));
   check('summary is the reply, not our own echo',
     !(outcome.summary ?? '').includes('TASK ['));
-  check('hermesRef carries session:cursor of the reply', outcome.hermesRef === 'sess-1:52');
+  check('summary has the RESULT marker stripped',
+    !(outcome.summary ?? '').includes('RESULT ['));
+  check('hermesRef carries session:cursor of the reply', outcome.hermesRef === 'sess-1:53');
   check('messages_send used the configured target',
     delegRequests.some(r => r.name === 'messages_send' && r.args.target === 'telegram:12345'));
   check('sent goal embedded bounds (success criteria + time limit)',
     sentMessage.includes('SUCCESS CRITERIA') && sentMessage.includes('TIME LIMIT'));
+  check('sent goal instructs the RESULT [token] reply format',
+    /WHEN DONE.*RESULT \[[^\]]+\]/.test(sentMessage));
   check('cursor snapshot taken before send (events_poll first)',
     delegRequests[0]?.name === 'events_poll');
 

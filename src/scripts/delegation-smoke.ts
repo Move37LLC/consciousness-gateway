@@ -121,7 +121,7 @@ async function main(): Promise<void> {
       timeoutMs: 30_000,
     });
     const happy = await okBridge.delegate(
-      'Reply with exactly the single word: PONG',
+      'Reply with the word: PONG',
       { timeLimitMs: 60_000, successCriteria: 'reply contains PONG' },
     );
     result(

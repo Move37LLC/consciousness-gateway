@@ -316,13 +316,19 @@ export class HermesBridge implements HermesDelegator {
    *
    *   1. Snapshot the event cursor so we only read replies AFTER our send.
    *   2. `messages_send(target, message)` — the goal + bounds, carrying a unique
-   *      correlation token so we can distinguish the agent's reply from the
-   *      echo of our own message WITHOUT depending on Hermes' (deployment-
-   *      specific) event direction/role field names (§8 Q3 of the verification
-   *      plan recommends exactly this token fallback).
+   *      correlation token and instructing the agent to prefix its reply with
+   *      `RESULT [token]`.
    *   3. `events_wait(after_cursor, session_key?, timeout_ms)` in a loop until
-   *      the bound's deadline; the first inbound message that is NOT our own
-   *      echo is the result.
+   *      the bound's deadline; the first event whose text carries the RESULT
+   *      marker (and is not the echo of our own TASK message) is the result.
+   *
+   * Correlation is DIRECTION-AGNOSTIC by design (F3 fix, Kern R6.3): an agent
+   * reply delivered via the bot is tagged OUTBOUND by Hermes' event stream, so
+   * filtering on inbound/outbound silently discards real replies. Only the
+   * token marker is trusted. The echo of our own send contains BOTH markers
+   * (`TASK [token]` and the literal `RESULT [token]` inside the reply-format
+   * instruction), so the reply predicate is: has `RESULT [token]` AND lacks
+   * `TASK [token]`.
    *
    * Runs OFF the 1s tick (executor fires it in the background), so the blocking
    * wait here never stalls the consciousness loop. Every failure mode preserves
@@ -362,7 +368,8 @@ export class HermesBridge implements HermesDelegator {
       `SUCCESS CRITERIA: ${bounds.successCriteria}\n` +
       `TIME LIMIT: ${Math.round(bounds.timeLimitMs / 1000)}s` +
       (bounds.maxResourceUnits ? `\nRESOURCE LIMIT: ${bounds.maxResourceUnits} units` : '') +
-      (context ? `\nCONTEXT: ${context}` : '');
+      (context ? `\nCONTEXT: ${context}` : '') +
+      `\nWHEN DONE, reply with a message that starts with: RESULT [${token}]:`;
 
     const send = await this.callTool(`${p}messages_send`, { target, message });
     if (!send.ok) {
@@ -390,7 +397,7 @@ export class HermesBridge implements HermesDelegator {
       const reply = pickAgentReply(events, token);
       if (reply) {
         const ref = session ? `${session}:${reply.cursor}` : String(reply.cursor);
-        return { ok: true, summary: reply.text || 'delegation completed', hermesRef: ref };
+        return { ok: true, summary: stripResultMarker(reply.text, token) || 'delegation completed', hermesRef: ref };
       }
     }
     return { ok: false, error: `no agent reply within ${bounds.timeLimitMs}ms` };
@@ -720,14 +727,29 @@ function maxCursor(events: NormEvent[], fallback: number): number {
   return events.reduce((m, e) => (e.cursor > m ? e.cursor : m), fallback);
 }
 
-/** The first inbound message that is NOT the echo of our own send (identified
- *  by the correlation token) — that is the agent's reply. */
+/** The agent's reply, identified DIRECTION-AGNOSTICALLY by the `RESULT [token]`
+ *  marker (F3 fix). Do NOT filter on inbound/outbound: an agent reply delivered
+ *  through the bot is itself an OUTBOUND event in Hermes' stream, so a direction
+ *  filter silently discards real replies. The echo of our own TASK message also
+ *  contains the literal `RESULT [token]` (inside the reply-format instruction),
+ *  so it is excluded by its `TASK [token]` prefix instead. */
 function pickAgentReply(events: NormEvent[], token: string): { text: string; cursor: number } | null {
+  const resultMarker = `RESULT [${token}]`;
+  const taskMarker = `TASK [${token}]`;
   for (const e of events) {
-    if (e.outbound) continue;             // our own message direction
-    if (e.text.includes(token)) continue; // echo of our send (token rides in it)
-    if (!e.text) continue;                // non-message / empty event
+    if (!e.text) continue;                     // non-message / empty event
+    if (e.text.includes(taskMarker)) continue; // echo of our own send
+    if (!e.text.includes(resultMarker)) continue;
     return { text: e.text, cursor: e.cursor };
   }
   return null;
+}
+
+/** Strip the `RESULT [token]:` prefix so the Gateway's audit summary carries
+ *  the substance of the reply, not the correlation plumbing. */
+function stripResultMarker(text: string, token: string): string {
+  const marker = `RESULT [${token}]`;
+  const idx = text.indexOf(marker);
+  if (idx === -1) return text.trim();
+  return text.slice(idx + marker.length).replace(/^\s*:\s*/, '').trim();
 }
