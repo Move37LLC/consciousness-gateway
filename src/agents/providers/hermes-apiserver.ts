@@ -357,6 +357,22 @@ function pickString(obj: unknown, keys: string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Render a MirrorEvent into the Telegram audit-mirror text (Kern R3 format).
+ * Shared by the Gateway wiring and the smoke test so the audit feed is
+ * byte-identical wherever it originates. Run ids are wrapped in backticks so
+ * their underscores don't trip Markdown parsing.
+ */
+export function renderMirrorEvent(ev: MirrorEvent): string {
+  if (ev.phase === 'task') {
+    return `📋 *TASK* \`${ev.runId ?? '—'}\`\n🔧 Tools: ${ev.tools.join(', ')}\n${ev.goal ?? ''}`;
+  }
+  if (ev.phase === 'approval_denied') {
+    return `⚠️ *APPROVAL DENIED* \`${ev.runId ?? '—'}\`\nTool: ${ev.tool ?? 'unknown'}\nInput: ${ev.input ?? ''}\nAction: DENIED (default policy)`;
+  }
+  return `${ev.ok ? '✅' : '❌'} *RESULT* \`${ev.runId ?? '—'}\`\n${ev.ok ? (ev.summary ?? '') : (ev.error ?? '')}\n⏱ ${ev.elapsedMs ?? 0}ms`;
+}
+
 /** Parse a single SSE frame into its `event:` name and concatenated `data:`. */
 function parseSseFrame(frame: string): { event?: string; data: string } {
   let event: string | undefined;

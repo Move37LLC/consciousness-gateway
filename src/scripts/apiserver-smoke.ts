@@ -25,7 +25,7 @@
  */
 
 import TelegramBot from 'node-telegram-bot-api';
-import { ApiServerBridge, MirrorEvent } from '../agents/providers/hermes-apiserver';
+import { ApiServerBridge, MirrorEvent, renderMirrorEvent } from '../agents/providers/hermes-apiserver';
 
 const apiUrl = process.env.HERMES_API_URL ?? 'http://127.0.0.1:8642';
 const apiKey = process.env.HERMES_API_KEY;
@@ -47,7 +47,7 @@ function buildMirror(): { fn: (ev: MirrorEvent) => Promise<void>; fired: () => n
   const bot = tgToken ? new TelegramBot(tgToken, { polling: false }) : null;
   const fn = async (ev: MirrorEvent): Promise<void> => {
     count++;
-    const text = renderMirror(ev);
+    const text = renderMirrorEvent(ev);
     if (bot && tgChat) {
       await bot.sendMessage(tgChat, text, { parse_mode: 'Markdown', disable_web_page_preview: true });
     } else {
@@ -55,16 +55,6 @@ function buildMirror(): { fn: (ev: MirrorEvent) => Promise<void>; fired: () => n
     }
   };
   return { fn, fired: () => count };
-}
-
-function renderMirror(ev: MirrorEvent): string {
-  if (ev.phase === 'task') {
-    return `📋 *TASK* \`${ev.runId}\`\n🔧 Tools: ${ev.tools.join(', ')}\n${ev.goal ?? ''}`;
-  }
-  if (ev.phase === 'approval_denied') {
-    return `⚠️ *APPROVAL DENIED* \`${ev.runId}\`\nTool: ${ev.tool}\nInput: ${ev.input ?? ''}\nAction: DENIED (default policy)`;
-  }
-  return `${ev.ok ? '✅' : '❌'} *RESULT* \`${ev.runId}\`\n${ev.ok ? (ev.summary ?? '') : (ev.error ?? '')}\n⏱ ${ev.elapsedMs ?? 0}ms`;
 }
 
 async function main(): Promise<void> {

@@ -118,6 +118,10 @@ if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
     notificationPollMs: 10_000,
   };
   telegram = new TelegramChannel(tgConfig, consciousness, gateway, documentStore, systemDocStore, conversationStore, transcriptTool);
+  // Kern R3: Telegram is the delegation audit-mirror channel. The Gateway's own
+  // bot narrates TASK / RESULT / approval-denials here; warn-not-block on failure.
+  const mirrorChannel = telegram;
+  consciousness.setDelegationMirror((text) => mirrorChannel.send(text));
   console.log('  Telegram: configured (will start with server)');
 } else {
   console.log('  Telegram: not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)');

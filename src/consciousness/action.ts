@@ -150,6 +150,12 @@ export class ActionExecutor {
     this.delegator = delegator;
   }
 
+  /** Name of the active delegation transport (for status/tests), or null. */
+  getDelegatorName(): string | null {
+    const d = this.delegator as { name?: string } | null;
+    return d?.name ?? (this.delegator ? 'unnamed' : null);
+  }
+
   /**
    * Authorize an intention through GATO layers.
    * Returns the intention with authorization status and dharma fitness.

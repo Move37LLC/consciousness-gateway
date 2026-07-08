@@ -37,6 +37,7 @@ import { EntropyCartographer } from './entropy-map';
 import { PerformanceMonitor } from '../trading/performance-monitor';
 import { RiskIntentionEngine } from '../trading/risk-intentions';
 import { HermesBridge } from '../agents/providers/hermes';
+import { ApiServerBridge, MirrorEvent } from '../agents/providers/hermes-apiserver';
 
 /**
  * Dopamine discount applied to simulated/paper P&L. A paper dollar is not
@@ -122,6 +123,8 @@ export class ConsciousnessLoop {
   private dharmaAlignment = 0;
   private stabilityIndex = 0;
   private safetyAlertCooldowns = new Map<string, number>();
+  /** Optional Telegram sink for the delegation audit mirror (Kern R3). */
+  private delegationMirror: ((text: string) => void | Promise<void>) | null = null;
 
   constructor(config?: Partial<ConsciousnessConfig>) {
     this.config = { ...DEFAULT_CONSCIOUSNESS_CONFIG, ...config };
@@ -137,6 +140,17 @@ export class ConsciousnessLoop {
     // via MCP. The bridge silently no-ops when HERMES_MCP_URL is unset.
     const hermesBridge = new HermesBridge();
     this.executor = new ActionExecutor(undefined, hermesBridge);
+    // Kern R1'/R6'.4: when the api_server transport is configured, it becomes
+    // the delegation delegator (verified failure-first via smoke:apiserver).
+    // The messaging bridge above stays as the dormant fallback (R-OVERLAY);
+    // this only overrides the *delegator*, not the tool bridge. Inert unless
+    // both HERMES_API_URL and HERMES_API_KEY are set, so a plain restart is a
+    // no-op until you deliberately flip the transport on.
+    if (process.env.HERMES_API_URL && process.env.HERMES_API_KEY) {
+      const apiBridge = new ApiServerBridge({ onMirror: (ev) => this.handleDelegationMirror(ev) });
+      this.executor.setDelegator(apiBridge);
+      console.log(`  [delegation] transport: api_server (${process.env.HERMES_API_URL}) — messaging bridge dormant`);
+    }
     this.dopamine = new DopamineSystem(this.memory);
 
     // Initialize dream cycle and entropy cartography
@@ -623,6 +637,40 @@ export class ConsciousnessLoop {
    */
   logExternalEvent(summary: string, data?: Record<string, unknown>): void {
     this.memory.storeReflection(this.tick, summary, data);
+  }
+
+  /**
+   * Attach the Telegram audit-mirror sink (Kern R3). Called from index.ts once
+   * the Telegram channel exists. The delegation bridge always logs the mirror
+   * to consciousness.db; this additionally narrates it to Telegram.
+   */
+  setDelegationMirror(sink: (text: string) => void | Promise<void>): void {
+    this.delegationMirror = sink;
+  }
+
+  /**
+   * Delegation audit mirror (Kern R3): every TASK / RESULT / approval-denial is
+   * persisted to consciousness.db (audit trail) and, when a Telegram sink is
+   * wired, narrated there too. Mirror delivery is warn-not-block — a failed
+   * Telegram post is logged, never allowed to disrupt the delegation.
+   */
+  private handleDelegationMirror(ev: MirrorEvent): void {
+    this.logExternalEvent(`delegation ${ev.phase}`, {
+      kind: 'delegation-mirror',
+      phase: ev.phase,
+      runId: ev.runId,
+      tools: ev.tools,
+      ok: ev.ok,
+      summary: ev.summary,
+      error: ev.error,
+      elapsedMs: ev.elapsedMs,
+      tool: ev.tool,
+    });
+    if (!this.delegationMirror) return;
+    // Lazy import keeps the loop free of the bridge's render details.
+    void import('../agents/providers/hermes-apiserver')
+      .then(({ renderMirrorEvent }) => this.delegationMirror?.(renderMirrorEvent(ev)))
+      .catch((err) => console.warn(`  [delegation] audit mirror failed (${ev.phase}): ${err instanceof Error ? err.message : String(err)}`));
   }
 
   /**
@@ -1279,6 +1327,11 @@ export class ConsciousnessLoop {
   getHermesStatus(): ReturnType<HermesBridge['getStatus']> | null {
     const bridge = this.executor.getHermesBridge();
     return bridge ? bridge.getStatus() : null;
+  }
+
+  /** Name of the active delegation transport ('hermes' | 'hermes-apiserver' | null). */
+  getDelegatorName(): string | null {
+    return this.executor.getDelegatorName();
   }
 
   /**

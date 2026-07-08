@@ -1251,6 +1251,41 @@ async function test() {
 
   await new Promise<void>(resolve => apiServer.close(() => resolve()));
 
+  // ── Test 31: Gateway wiring selects api_server delegator (R6'.4) ──
+  section('Test 31: ConsciousnessLoop wires api_server delegator + audit mirror');
+
+  const { ConsciousnessLoop: Loop } = await import('./consciousness/loop');
+
+  // Without the env, delegation stays on the (dormant) messaging bridge.
+  const savedApiUrl = process.env.HERMES_API_URL;
+  const savedApiKey = process.env.HERMES_API_KEY;
+  delete process.env.HERMES_API_URL;
+  delete process.env.HERMES_API_KEY;
+  const plainLoop = new Loop({ tickIntervalMs: 100000 });
+  check('without api_server env, delegator is the messaging bridge',
+    plainLoop.getDelegatorName() === 'hermes');
+  await plainLoop.stop().catch(() => undefined);
+
+  // With the env, the loop overrides the delegator with ApiServerBridge and the
+  // audit mirror routes through the wired sink.
+  process.env.HERMES_API_URL = 'http://127.0.0.1:8642';
+  process.env.HERMES_API_KEY = 'test-key';
+  const wiredLoop = new Loop({ tickIntervalMs: 100000 });
+  check('with api_server env, delegator is api_server transport',
+    wiredLoop.getDelegatorName() === 'hermes-apiserver');
+  const mirrored: string[] = [];
+  wiredLoop.setDelegationMirror((text) => { mirrored.push(text); });
+  (wiredLoop as unknown as { handleDelegationMirror: (ev: MirrorEvent) => void })
+    .handleDelegationMirror({ phase: 'task', runId: 'run-x', tools: ['memory', 'session_search'], goal: 'ping' });
+  await new Promise(r => setTimeout(r, 20)); // allow the lazy import to resolve
+  check('audit mirror routes TASK text to the wired sink',
+    mirrored.some(t => t.includes('TASK') && t.includes('run-x')));
+  await wiredLoop.stop().catch(() => undefined);
+
+  // Restore env for any later tests.
+  if (savedApiUrl !== undefined) process.env.HERMES_API_URL = savedApiUrl; else delete process.env.HERMES_API_URL;
+  if (savedApiKey !== undefined) process.env.HERMES_API_KEY = savedApiKey; else delete process.env.HERMES_API_KEY;
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 
