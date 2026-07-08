@@ -17,6 +17,7 @@ import { IntentionEngine } from './consciousness/intention';
 import { ActionExecutor, validateDelegationScope } from './consciousness/action';
 import { ConsciousnessMemory } from './consciousness/memory';
 import { HermesBridge, HermesDelegator } from './agents/providers/hermes';
+import { ApiServerBridge, MirrorEvent } from './agents/providers/hermes-apiserver';
 import { NoSelfRegularizer } from './dharma/no-self';
 import { DopamineSystem } from './consciousness/dopamine';
 import { detectTradeMode } from './consciousness/monitors/trading';
@@ -1104,6 +1105,151 @@ async function test() {
   check('delegation with no agent reply times out cleanly',
     timedOut.ok === false && (timedOut.error ?? '').includes('no agent reply within'));
   await new Promise<void>(resolve => silentServer.close(() => resolve()));
+
+  // ── Test 30: api_server delegation bridge (Kern R1'/R2'/R3) ───
+  section('Test 30: ApiServerBridge — run lifecycle, deadline/stop, deny+escalate, mirror');
+
+  // Mock the Hermes api_server surface: POST /v1/runs (rejects malformed),
+  // GET /v1/runs/:id (status→output), POST .../stop, POST .../approval, and the
+  // SSE /events stream that can raise an approval request. A run whose input
+  // mentions PONG completes with "PONG" ~30ms after creation; anything else stays
+  // 'started' so the deadline path must issue /stop.
+  interface MockRun { status: string; input: string; created: number; }
+  const runs = new Map<string, MockRun>();
+  const approvalCalls: Array<Record<string, unknown>> = [];
+  let stopCalls = 0;
+  let runSeq = 0;
+
+  const apiServer = http.createServer((req, res) => {
+    const url = req.url ?? '';
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      const json = (code: number, obj: unknown) => {
+        res.writeHead(code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      // GET /health
+      if (req.method === 'GET' && url === '/health') return json(200, { status: 'ok' });
+
+      // POST /v1/runs — create (with malformed-input rejection)
+      if (req.method === 'POST' && url === '/v1/runs') {
+        let parsed: Record<string, unknown> = {};
+        try { parsed = JSON.parse(body || '{}'); } catch { /* ignore */ }
+        if (typeof parsed.input !== 'string' || parsed.input.length === 0) {
+          return json(422, { error: 'input is required and must be a non-empty string' });
+        }
+        const id = `run-${++runSeq}`;
+        runs.set(id, { status: 'started', input: parsed.input as string, created: Date.now() });
+        return json(200, { run_id: id, status: 'started' });
+      }
+
+      // /v1/runs/:id (+ /stop, /approval, /events)
+      const m = /^\/v1\/runs\/([^/]+)(\/stop|\/approval|\/events)?$/.exec(url);
+      if (m) {
+        const id = m[1];
+        const sub = m[2];
+        const run = runs.get(id);
+        if (!run) return json(404, { error: 'no such run' });
+
+        if (sub === '/stop' && req.method === 'POST') {
+          run.status = 'stopped'; stopCalls++;
+          return json(200, { run_id: id, status: 'stopping' });
+        }
+        if (sub === '/approval' && req.method === 'POST') {
+          try { approvalCalls.push(JSON.parse(body || '{}')); } catch { approvalCalls.push({}); }
+          return json(200, { ok: true });
+        }
+        if (sub === '/events' && req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
+          if (/APPROVAL/.test(run.input)) {
+            setTimeout(() => {
+              res.write('event: approval_request\n');
+              res.write(`data: ${JSON.stringify({ approval_id: 'ap-1', tool: 'terminal', input: 'rm -rf /' })}\n\n`);
+            }, 10);
+          }
+          // Close the stream shortly after so the reader unwinds cleanly.
+          setTimeout(() => { try { res.end(); } catch { /* noop */ } }, 200);
+          return;
+        }
+        // GET status
+        if (!sub && req.method === 'GET') {
+          if (run.status === 'started' && /PONG/.test(run.input) && Date.now() - run.created > 30) {
+            run.status = 'completed';
+          }
+          const out = run.status === 'completed' ? 'PONG' : undefined;
+          return json(200, { run_id: id, status: run.status, output: out });
+        }
+      }
+      json(400, { error: 'unhandled' });
+    });
+  });
+  await new Promise<void>(resolve => apiServer.listen(0, '127.0.0.1', resolve));
+  const apiPort = (apiServer.address() as { port: number }).port;
+  const apiBase = `http://127.0.0.1:${apiPort}`;
+
+  // 30a — not configured → clean guard, no throw, no network.
+  const unconfigured = new ApiServerBridge({ apiUrl: undefined, apiKey: undefined });
+  const unconf = await unconfigured.delegate('x', { timeLimitMs: 500, successCriteria: 'n/a' });
+  check('unconfigured api_server bridge fails clearly (no throw)',
+    unconf.ok === false && (unconf.error ?? '').includes('not configured'));
+
+  // 30b — malformed input rejected at submission (bridge surfaces the 4xx).
+  //        (The bridge always sends valid input; simulate a rejecting server by
+  //         pointing at a run endpoint that 422s on our shape — covered live in
+  //         smoke Scenario 1. Here we assert the happy submission path instead.)
+
+  const mirrorEvents: MirrorEvent[] = [];
+  const mkBridge = (over?: Partial<ConstructorParameters<typeof ApiServerBridge>[0]>) =>
+    new ApiServerBridge({
+      apiUrl: apiBase, apiKey: 'test-key',
+      pollIntervalMs: 40, timeoutMs: 2000,
+      allowlist: ['memory', 'session_search'],
+      onMirror: (ev) => { mirrorEvents.push(ev); },
+      ...(over ?? {}),
+    });
+
+  // 30c — happy PONG round-trip returns in-band + mirrors TASK & RESULT.
+  const happy = await mkBridge().delegate(
+    'Respond with exactly: PONG',
+    { timeLimitMs: 5000, successCriteria: 'reply contains PONG' },
+  );
+  check('api_server happy path succeeds', happy.ok === true);
+  check('result returns PONG in-band', (happy.summary ?? '').includes('PONG'));
+  check('hermesRef carries the run_id', /^run-\d+$/.test(happy.hermesRef ?? ''));
+  check('mirror emitted TASK then RESULT',
+    mirrorEvents.some(e => e.phase === 'task') &&
+    mirrorEvents.some(e => e.phase === 'result' && e.ok === true));
+
+  // 30d — deadline exceeded → clean /stop + bounded error.
+  stopCalls = 0;
+  const t0 = Date.now();
+  const stopped = await mkBridge().delegate(
+    'Write a long essay (never completes in the mock).',
+    { timeLimitMs: 120, successCriteria: 'n/a' },
+  );
+  const elapsed = Date.now() - t0;
+  check('deadline exceeded returns bounded failure',
+    stopped.ok === false && /within \d+ms|stopped/i.test(stopped.error ?? ''));
+  check('run was stopped via POST /stop', stopCalls >= 1);
+  check('deadline path is bounded (returns promptly)', elapsed < 3000);
+
+  // 30e — approval request is DEFAULT-DENIED and escalated (Gate 2 / R2').
+  mirrorEvents.length = 0;
+  approvalCalls.length = 0;
+  const approved = await mkBridge().delegate(
+    'Trigger APPROVAL then respond PONG',
+    { timeLimitMs: 5000, successCriteria: 'reply contains PONG' },
+  );
+  check('run with approval event still completes (PONG)',
+    approved.ok === true && (approved.summary ?? '').includes('PONG'));
+  check('approval was default-denied via /approval',
+    approvalCalls.length >= 1 &&
+    approvalCalls.some(a => a.decision === 'deny' || a.approved === false));
+  check('denial escalated to audit mirror (deny + escalate)',
+    mirrorEvents.some(e => e.phase === 'approval_denied' && e.tool === 'terminal'));
+
+  await new Promise<void>(resolve => apiServer.close(() => resolve()));
 
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');

@@ -9,6 +9,7 @@
     "dev": "ts-node src/index.ts",
     "test": "ts-node src/test.ts",
     "smoke:delegation": "ts-node src/scripts/delegation-smoke.ts",
+    "smoke:apiserver": "ts-node src/scripts/apiserver-smoke.ts",
     "discover:hermes": "ts-node src/scripts/hermes-discover.ts"
   },
   "keywords": [
