@@ -101,8 +101,12 @@ export class ConsciousnessGateway {
 
     // ═══════════════════════════════════════════════════════════════
     // LAYER 1: Model Alignment — Route via Product Algebra
+    // (respecting the calling personality's preferred model, if any)
     // ═══════════════════════════════════════════════════════════════
-    const routingDecision = this.router.route(message);
+    const routingDecision = this.router.route(message, undefined, callOptions?.preferredModel);
+    if (routingDecision.preferredApplied) {
+      console.log(`  [router] Preferred override → ${routingDecision.selectedModel}`);
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // LAYER 2: Agent Alignment — Process with dharma constraints

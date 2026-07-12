@@ -533,7 +533,10 @@ export class TelegramChannel {
     const toolResult = await this.toolExecutor.execute(
       async (prompt: string, sysPrompt?: string) => {
         const routeMsg: Message = { ...message, id: uuid(), content: prompt };
-        const resp = await this.gateway.route(routeMsg, { systemPrompt: sysPrompt || systemPrompt });
+        const resp = await this.gateway.route(routeMsg, {
+          systemPrompt: sysPrompt || systemPrompt,
+          preferredModel: VOICES.gateway.preferredModel,
+        });
         if ('error' in resp) throw new Error((resp as any).reason);
         lastRouteResponse = resp;
         return resp.content;
@@ -661,6 +664,7 @@ export class TelegramChannel {
         const resp = await this.gateway.route(routeMessage, {
           systemPrompt: sysPrompt || systemPrompt,
           temperature: ctx.temperature,
+          preferredModel: voice.preferredModel,
         });
         if ('error' in resp) throw new Error((resp as any).reason);
         lastRouteResponse = resp;

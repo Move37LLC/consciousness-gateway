@@ -38,7 +38,11 @@ export class ProductAlgebraRouter {
    * 3. Score each candidate model against the fused experience
    * 4. Return the highest-scoring model with reasoning
    */
-  route(message: Message, context?: { turnCount?: number; topic?: string }): RoutingDecision {
+  route(
+    message: Message,
+    context?: { turnCount?: number; topic?: string },
+    preferredModel?: string,
+  ): RoutingDecision {
     // Step 1: Create agents for each modality present
     const agents: ConsciousAgentState[] = [];
 
@@ -69,19 +73,42 @@ export class ProductAlgebraRouter {
     // Sort by score descending
     scored.sort((a, b) => b.score - a.score);
 
-    const selected = scored[0];
-    const alternatives = scored.slice(1, 4); // top 3 alternatives
+    const fusionWinner = scored[0];
+    let selected = fusionWinner;
+    let preferredApplied = false;
+
+    // Step 3b: Soft personality override.
+    // If the caller requested a preferredModel, pin it over the fusion winner
+    // as long as it's a configured model that can satisfy the request's
+    // modalities. This keeps persona voices on their intended model while
+    // still honoring hard capability constraints (e.g. vision) and letting
+    // provider-level availability fallback run downstream.
+    if (preferredModel && preferredModel !== fusionWinner.model) {
+      const pinned = this.models.find(m => m.id === preferredModel);
+      if (pinned && (!hasImage || pinned.capabilities.vision)) {
+        selected = scored.find(s => s.model === preferredModel)
+          ?? { model: pinned.id, score: this.scoreModel(pinned, fusedExperience, message, entropyRate) };
+        preferredApplied = true;
+      }
+    }
+
+    // Top 3 alternatives, excluding the finally-selected model
+    const alternatives = scored.filter(s => s.model !== selected.model).slice(0, 3);
 
     // Step 4: Generate reasoning
-    const reasoning = this.explainDecision(
+    let reasoning = this.explainDecision(
       selected.model, fusedExperience, agents, compositionStrength, entropyRate
     );
+    if (preferredApplied) {
+      reasoning += ` | Preferred override: pinned ${selected.model} (fusion top: ${fusionWinner.model})`;
+    }
 
     return {
       selectedModel: selected.model,
       fusionScore: selected.score,
       alternatives,
       reasoning,
+      preferredApplied,
     };
   }
 

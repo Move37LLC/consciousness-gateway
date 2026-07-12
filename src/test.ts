@@ -1286,6 +1286,49 @@ async function test() {
   if (savedApiUrl !== undefined) process.env.HERMES_API_URL = savedApiUrl; else delete process.env.HERMES_API_URL;
   if (savedApiKey !== undefined) process.env.HERMES_API_KEY = savedApiKey; else delete process.env.HERMES_API_KEY;
 
+  // ── Test 32: Preferred-model soft override in router ──────────
+  section('Test 32: ProductAlgebraRouter honors personality preferredModel');
+
+  const { ProductAlgebraRouter } = await import('./fusion/router');
+  const { DEFAULT_CONFIG: cfg } = await import('./core/config');
+  const { VOICES: voices } = await import('./personalities/voices');
+  const prefRouter = new ProductAlgebraRouter(cfg);
+
+  const textMsg: Message = {
+    id: uuid(), content: 'Short question about delegation wiring.', timestamp: Date.now(),
+    sender: { id: 'test-user', role: 'user' }, channel: 'api',
+  };
+
+  // Baseline: no preference → fusion is free to pick anything in the pool.
+  const baseDecision = prefRouter.route(textMsg);
+  check('baseline route returns a configured model',
+    cfg.providers.flatMap(p => p.models).some(m => m.id === baseDecision.selectedModel));
+  check('baseline is not flagged as preferred override', baseDecision.preferredApplied !== true);
+
+  // With Kern's preference, the router must pin claude-sonnet-4.
+  const kernPref = voices.kern.preferredModel;
+  const pinnedDecision = prefRouter.route(textMsg, undefined, kernPref);
+  check('preferred model is pinned as selected', pinnedDecision.selectedModel === kernPref);
+  check('preferredApplied flag set when override differs from fusion top',
+    kernPref === baseDecision.selectedModel ? true : pinnedDecision.preferredApplied === true);
+  check('pinned model excluded from its own alternatives',
+    !pinnedDecision.alternatives.some(a => a.model === pinnedDecision.selectedModel));
+
+  // Capability guard: a text-only preferred model must NOT be pinned for an image request.
+  const imageMsg: Message = {
+    id: uuid(), content: 'Describe this image.', timestamp: Date.now(),
+    sender: { id: 'test-user', role: 'user' }, channel: 'api',
+    attachments: [{ type: 'image', url: 'https://example.com/x.png', mimeType: 'image/png' }],
+  };
+  const visionPin = prefRouter.route(imageMsg, undefined, 'grok-3-mini'); // grok-3-mini has vision:false
+  check('text-only preferred model not pinned for vision request',
+    visionPin.selectedModel !== 'grok-3-mini' && visionPin.preferredApplied !== true);
+
+  // Unknown preferred model → ignored, falls back to fusion winner.
+  const unknownPin = prefRouter.route(textMsg, undefined, 'no-such-model');
+  check('unknown preferred model ignored',
+    unknownPin.selectedModel === baseDecision.selectedModel && unknownPin.preferredApplied !== true);
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 

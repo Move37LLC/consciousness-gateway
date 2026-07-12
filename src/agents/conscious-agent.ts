@@ -38,6 +38,12 @@ export interface AgentCallOptions {
   systemPrompt?: string;
   temperature?: number;
   conversationHistory?: ConversationTurn[];
+  /**
+   * Soft model floor requested by the calling personality. When set and the
+   * model is capable of the request's modalities, the router pins it over the
+   * fusion-score winner. Falls back to fusion routing otherwise.
+   */
+  preferredModel?: string;
 }
 
 /**

@@ -94,6 +94,8 @@ export interface RoutingDecision {
   fusionScore: number;
   alternatives: Array<{ model: string; score: number }>;
   reasoning: string;
+  /** True when a personality's preferredModel overrode the top fusion pick. */
+  preferredApplied?: boolean;
 }
 
 // ─── Conscious Agent State ──────────────────────────────────────────

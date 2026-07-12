@@ -258,6 +258,9 @@ app.post('/v1/chat', async (req, res) => {
     });
     systemPromptParts.unshift(ctx.systemPrompt);
     callOptions.temperature = ctx.temperature;
+    // Pin the persona's preferred model as a soft floor (router still enforces
+    // capability constraints; provider registry still handles availability fallback).
+    callOptions.preferredModel = VOICES[resolvedPersonality].preferredModel;
 
     // Load additional documents if requested
     const loadDocs = documentProject !== 'none';
