@@ -343,7 +343,17 @@ export class TelegramChannel {
     this.bot.on('message', async (msg) => {
       if (String(msg.chat.id) !== this.config.chatId) return;
       if (!msg.text || msg.text.startsWith('/')) return;
-      await this.handleChat(msg.chat.id, msg.text);
+      try {
+        await this.handleChat(msg.chat.id, msg.text);
+      } catch (err) {
+        console.error('  [telegram] handleChat error:', err);
+        try {
+          await this.bot.sendMessage(
+            msg.chat.id,
+            `❌ Chat error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } catch { /* ignore */ }
+      }
     });
   }
 
@@ -550,16 +560,26 @@ export class TelegramChannel {
       });
 
       if (toolResult.toolsUsed.length > 0) {
-        const toolSummary = toolResult.toolsUsed.map(t =>
-          t.type === 'search' ? `🔍 Searched: "${t.query}"` : `🌐 Browsed: ${t.url}`
-        ).join('\n');
+        const toolSummary = toolResult.toolsUsed.map(t => {
+          if (t.type === 'search') return `🔍 Searched: "${t.query}"`;
+          if (t.type === 'transcript') return `📝 Transcript: "${t.query}"`;
+          if (t.type === 'browse') return `🌐 Browsed: ${t.url ?? '(unknown)'}`;
+          return `🔧 Tool: ${t.type}`;
+        }).join('\n');
         await this.bot.sendMessage(chatId, toolSummary);
       }
 
       const dm = response.dharmaMetrics;
       reply += `\n\n_Model: ${response.model} | Fitness: ${dm.fitness.toFixed(2)}_`;
 
-      await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+      try {
+        await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+      } catch (mdErr) {
+        // Markdown parse failures (underscores in paths, etc.) used to swallow
+        // the entire reply after a successful tool call — send plain text.
+        console.error('  [telegram] Markdown send failed, falling back to plain text:', mdErr);
+        await this.bot.sendMessage(chatId, reply);
+      }
     }
   }
 
@@ -652,9 +672,12 @@ export class TelegramChannel {
 
     // Send tool activity indicators if tools were used
     if (toolResult.toolsUsed.length > 0) {
-      const toolSummary = toolResult.toolsUsed.map(t =>
-        t.type === 'search' ? `🔍 Searched: "${t.query}"` : `🌐 Browsed: ${t.url}`
-      ).join('\n');
+      const toolSummary = toolResult.toolsUsed.map(t => {
+        if (t.type === 'search') return `🔍 Searched: "${t.query}"`;
+        if (t.type === 'transcript') return `📝 Transcript: "${t.query}"`;
+        if (t.type === 'browse') return `🌐 Browsed: ${t.url ?? '(unknown)'}`;
+        return `🔧 Tool: ${t.type}`;
+      }).join('\n');
       await this.bot.sendMessage(chatId, toolSummary);
     }
 
@@ -676,7 +699,12 @@ export class TelegramChannel {
     const toolCount = toolResult.toolsUsed.length;
     reply += `\n\n_${voice.emoji} ${voice.name}${toolCount > 0 ? ` | ${toolCount} tool(s)` : ''}_`;
 
-    await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    try {
+      await this.bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    } catch (mdErr) {
+      console.error('  [telegram] Markdown send failed, falling back to plain text:', mdErr);
+      await this.bot.sendMessage(chatId, reply);
+    }
   }
 
   // resolveToolContext replaced by ToolExecutor — autonomous tool calling
