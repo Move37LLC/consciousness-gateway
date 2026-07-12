@@ -216,6 +216,12 @@ export interface PersonalityBuildOptions {
   transcriptContext?: string;
   /** Recent conversation history for current session */
   sessionHistory?: string;
+  /**
+   * When false, inject an honest correction: file-based [TRANSCRIPT:] search
+   * is offline. Personality core prompts still mention the tool; this note
+   * prevents claiming /mnt/transcripts access that isn't wired.
+   */
+  transcriptAvailable?: boolean;
 }
 
 /**
@@ -256,6 +262,18 @@ export function buildPersonalityContext(
   parts.push(
     voice.corePrompt,
   );
+
+  // Honest override when the file corpus is offline (path missing / empty).
+  if (options?.transcriptAvailable === false) {
+    parts.push(
+      '',
+      '─── MEMORY NOTE (authoritative) ───',
+      'File-based transcript search ([TRANSCRIPT:]) is currently UNAVAILABLE — the transcripts directory is not configured or empty.',
+      'You still have: current-session conversation history, consciousness memory stream, and loaded documents.',
+      'Do NOT claim you can search /mnt/transcripts or invent past conversations.',
+      'If asked about cross-session recall, say the transcript corpus is being restored and use what is in this context.',
+    );
+  }
 
   // Past conversations from transcripts
   if (options?.transcriptContext) {

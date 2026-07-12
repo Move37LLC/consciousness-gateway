@@ -26,6 +26,10 @@ import { VoiceId, VOICES, buildPersonalityContext } from './personalities/voices
 import { WebSearchTool } from './tools/search';
 import { WebBrowseTool } from './tools/browse';
 import { TranscriptSearchTool } from './tools/transcripts';
+import {
+  exportConversationsToTranscripts,
+  resolveTranscriptsDir,
+} from './tools/transcript-export';
 import { DocumentStore } from './documents/store';
 import { VALID_PROJECTS, ProjectId } from './documents/types';
 import { SystemDocumentStore } from './documents/system-store';
@@ -53,11 +57,27 @@ app.use('/dashboard', express.static(path.join(__dirname, '..', 'public')));
 const gateway = new ConsciousnessGateway(DEFAULT_CONFIG);
 const searchTool = new WebSearchTool();
 const browseTool = new WebBrowseTool();
-const transcriptTool = new TranscriptSearchTool(process.env.TRANSCRIPTS_DIR);
 const documentStore = new DocumentStore();
 const systemDocStore = new SystemDocumentStore();
 systemDocStore.seed();
 const conversationStore = new ConversationStore();
+
+// Transcript corpus: ConversationStore is the source of truth; files under
+// TRANSCRIPTS_DIR are the searchable export the [TRANSCRIPT:] tool reads.
+// On macOS, /mnt/transcripts does not exist — set TRANSCRIPTS_DIR explicitly.
+const transcriptsDir = resolveTranscriptsDir(process.env.TRANSCRIPTS_DIR);
+if (process.env.TRANSCRIPTS_DIR?.trim()) {
+  try {
+    const exported = exportConversationsToTranscripts(conversationStore, { outDir: transcriptsDir });
+    console.log(
+      `  [transcripts] exported ${exported.filesWritten} file(s) ` +
+      `(${exported.messagesExported} msgs, skipped ${exported.sessionsSkipped}) → ${transcriptsDir}`,
+    );
+  } catch (err) {
+    console.warn(`  [transcripts] export failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+const transcriptTool = new TranscriptSearchTool(process.env.TRANSCRIPTS_DIR);
 const toolExecutor = new ToolExecutor(searchTool, browseTool, undefined, transcriptTool);
 const health = gateway.getHealth();
 
@@ -81,7 +101,14 @@ console.log('');
 console.log('  Tools:');
 console.log(`    search       ${searchTool.available ? 'ready (Brave)' : 'no key'}`);
 console.log(`    browse       ${browseTool.available ? 'ready (Grok)' : 'no key'}`);
-console.log(`    transcripts  ${transcriptTool.available ? 'ready (/mnt/transcripts)' : 'not found'}`);
+const transcriptFiles = transcriptTool.available ? transcriptTool.listTranscripts().length : 0;
+console.log(
+  `    transcripts  ${
+    transcriptTool.available
+      ? `ready (${transcriptsDir}, ${transcriptFiles} file(s))`
+      : `not found (set TRANSCRIPTS_DIR — default ${transcriptsDir} missing)`
+  }`,
+);
 const docStats = documentStore.getStats();
 console.log(`    documents    ${docStats.total} stored`);
 const sysDocStats = systemDocStore.getStats();
@@ -227,6 +254,7 @@ app.post('/v1/chat', async (req, res) => {
       systemDocuments: systemDocs.length > 0 ? systemDocs : undefined,
       transcriptContext,
       sessionHistory,
+      transcriptAvailable: transcriptTool.available,
     });
     systemPromptParts.unshift(ctx.systemPrompt);
     callOptions.temperature = ctx.temperature;
@@ -828,6 +856,30 @@ app.get('/v1/transcripts/topic/:topic', async (req, res) => {
 
   const result = await transcriptTool.getByTopic([req.params.topic]);
   res.json(result);
+});
+
+/**
+ * POST /v1/transcripts/export — Re-export conversation_history → TRANSCRIPTS_DIR.
+ * Requires TRANSCRIPTS_DIR to be set (won't silently write to /mnt/transcripts).
+ */
+app.post('/v1/transcripts/export', (_req, res) => {
+  if (!process.env.TRANSCRIPTS_DIR?.trim()) {
+    return res.status(400).json({
+      error: 'TRANSCRIPTS_DIR is not set. Add it to .env (macOS example: ~/consciousness-gateway/transcripts).',
+    });
+  }
+  try {
+    const result = exportConversationsToTranscripts(conversationStore, {
+      outDir: resolveTranscriptsDir(process.env.TRANSCRIPTS_DIR),
+    });
+    consciousness.logExternalEvent(
+      `Transcript export: ${result.filesWritten} files (${result.messagesExported} msgs)`,
+      { tool: 'transcript-export', ...result },
+    );
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 // ─── Dopamine / Reward Routes ────────────────────────────────────────

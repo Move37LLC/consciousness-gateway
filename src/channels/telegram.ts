@@ -499,6 +499,7 @@ export class TelegramChannel {
       systemDocuments: sysDocsForGateway.length > 0 ? sysDocsForGateway : undefined,
       transcriptContext,
       sessionHistory,
+      transcriptAvailable: this.transcriptTool.available,
     });
 
     const systemParts: string[] = [ctx.systemPrompt];
@@ -618,6 +619,7 @@ export class TelegramChannel {
       systemDocuments: sysDocsForPersonality.length > 0 ? sysDocsForPersonality : undefined,
       transcriptContext,
       sessionHistory,
+      transcriptAvailable: this.transcriptTool.available,
     });
 
     // Append tool instructions so the personality can autonomously use tools
