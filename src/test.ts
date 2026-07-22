@@ -1482,6 +1482,53 @@ async function test() {
   check('sensors channel dormant by default in the loop', sensorsEntry?.available === false);
   await sensorLoop.stop().catch(() => undefined);
 
+  // 33i — RATIFIED CONTRACT: each modality passes ingress at its exact dim
+  // and fails at dim±1 (the guard is the boundary the contract locks in).
+  const { DEFAULT_CHANNEL_SPECS } = await import('./consciousness/sensors/types');
+  const { createSyntheticSource, buildSyntheticSources, readSensorSeed } =
+    await import('./consciousness/monitors/sensors');
+  const contractGuard = new SensorIngressGuard();
+  for (const spec of DEFAULT_CHANNEL_SPECS) {
+    const src = createSyntheticSource(spec.modality, 1);
+    const reading = src.read(Date.now());
+    check(`${spec.modality}: synthetic source emits exact dim (${spec.dim})`,
+      reading.values.length === spec.dim && src.dim === spec.dim);
+    check(`${spec.modality}: admitted at correct dim`,
+      contractGuard.admit(reading, Date.now()).ok);
+    check(`${spec.modality}: rejected at dim+1`,
+      contractGuard.admit({ ...reading, values: [...reading.values, 0] }, Date.now())
+        .rejection === 'bad_shape');
+    check(`${spec.modality}: rejected at dim-1`,
+      contractGuard.admit({ ...reading, values: reading.values.slice(0, -1) }, Date.now())
+        .rejection === 'bad_shape');
+    check(`${spec.modality}: values are all finite numbers (no string can exist)`,
+      reading.values.every(v => typeof v === 'number' && Number.isFinite(v)));
+  }
+
+  // 33j — SENSORS_SEED determinism: same seed → identical stream; different → not.
+  check('readSensorSeed parses an integer seed', readSensorSeed({ SENSORS_SEED: '42' } as any) === 42);
+  check('readSensorSeed returns undefined when unset', readSensorSeed({} as any) === undefined);
+  const seededA = createSyntheticSource('em_spectrum', 42);
+  const seededB = createSyntheticSource('em_spectrum', 42);
+  const seededC = createSyntheticSource('em_spectrum', 43);
+  const tSeed = 1_700_000_000_000;
+  const rA = seededA.read(tSeed).values;
+  const rB = seededB.read(tSeed).values;
+  const rC = seededC.read(tSeed).values;
+  check('same seed → identical synthetic stream (reproducible replay)',
+    rA.every((v, i) => v === rB[i]));
+  check('different seed → different synthetic stream',
+    rA.some((v, i) => v !== rC[i]));
+
+  // 33k — env-driven source selection (default + explicit modality list)
+  check('buildSyntheticSources defaults to the synthetic modality',
+    buildSyntheticSources({} as any).map(s => s.modality).join() === 'synthetic');
+  const multi = buildSyntheticSources({
+    SENSORS_SYNTHETIC_MODALITIES: 'field_magnetic, field_imu, bogus',
+  } as any);
+  check('buildSyntheticSources selects listed modalities and skips unknown',
+    multi.length === 2 && multi[0].modality === 'field_magnetic' && multi[1].modality === 'field_imu');
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 

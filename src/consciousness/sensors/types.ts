@@ -61,16 +61,26 @@ export interface SensorChannelSpec {
 }
 
 /**
- * Default channel contracts. Dims match the project-consciousness sensor
- * interfaces (EM: 1024 PSD bins; GW: FFT of 1s @ 4096 Hz; field: windowed
- * stats). Rates assume one window per poll (~4/min) with headroom.
+ * Default channel contracts — RATIFIED (Gateway sensor-contract ruling,
+ * 2026-07-22). Spectral instruments keep their natural binned shape;
+ * field instruments carry honest low-dim physical vectors:
+ *
+ *   em_spectrum        1024   PSD bins            normalized power (real driver: dBm/bin)
+ *   gravitational      2049   strain FFT bins     whitened strain (LIGO rfft, 1s @ 4096 Hz)
+ *   field_magnetic        3   [Bx, By, Bz]        microtesla (Earth field ~25–65 µT)
+ *   field_imu             6   [ax,ay,az,gx,gy,gz] accel m/s² (~9.81 rest) + gyro rad/s
+ *   field_environment     5   [tempC,hPa,RH%,lux,dB]
+ *   quantum_rng         256   entropy pool        normalized [0,1)
+ *   synthetic             8   scaffold waveform   dimensionless
+ *
+ * Rates assume one window per poll (~4/min) with headroom.
  */
 export const DEFAULT_CHANNEL_SPECS: SensorChannelSpec[] = [
   { modality: 'em_spectrum',       dim: 1024, maxPerMinute: 8,  maxAgeMs: 120_000 },
   { modality: 'gravitational',     dim: 2049, maxPerMinute: 8,  maxAgeMs: 600_000 },
-  { modality: 'field_magnetic',    dim: 16,   maxPerMinute: 12, maxAgeMs: 120_000 },
-  { modality: 'field_imu',         dim: 32,   maxPerMinute: 12, maxAgeMs: 120_000 },
-  { modality: 'field_environment', dim: 8,    maxPerMinute: 12, maxAgeMs: 300_000 },
+  { modality: 'field_magnetic',    dim: 3,    maxPerMinute: 12, maxAgeMs: 120_000 },
+  { modality: 'field_imu',         dim: 6,    maxPerMinute: 12, maxAgeMs: 120_000 },
+  { modality: 'field_environment', dim: 5,    maxPerMinute: 12, maxAgeMs: 300_000 },
   { modality: 'quantum_rng',       dim: 256,  maxPerMinute: 8,  maxAgeMs: 600_000 },
   { modality: 'synthetic',         dim: 8,    maxPerMinute: 12, maxAgeMs: 120_000 },
 ];
