@@ -28,6 +28,7 @@ import { GitHubMonitor } from './monitors/github';
 import { TwitterMonitor } from './monitors/twitter';
 import { EmailMonitor } from './monitors/email';
 import { TradingMonitor } from './monitors/trading';
+import { SensorsMonitor } from './monitors/sensors';
 import { DopamineSystem } from './dopamine';
 import { MindfulnessLoop, MindfulnessState } from './mindfulness';
 import { ConversationStore } from '../memory/conversation-store';
@@ -167,6 +168,11 @@ export class ConsciousnessLoop {
       new TwitterMonitor(this.config.twitterToken),
       new EmailMonitor(this.config.emailConfig),
       new TradingMonitor(this.config.tradingUrl),
+      // Phase 3 scaffold: physical sensation channel. Inert unless
+      // SENSORS_SYNTHETIC=1 (or, later, a hardware driver is configured).
+      // Sensation percepts feed fusion only — the IntentionEngine choke
+      // point guarantees they can never become intentions.
+      new SensorsMonitor(),
     );
 
     // Restore tick counter if previously running

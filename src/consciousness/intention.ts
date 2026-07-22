@@ -23,6 +23,7 @@ import {
   Goal, FusedPercept, SpatialPercept, ConsciousnessConfig,
   DelegationSpec, DriveId,
 } from './types';
+import { isSensation } from './sensors/types';
 
 /** Read a numeric env override, falling back to a default when unset/invalid.
  *  Lets the Gateway tune its own delegation cadence at runtime via `.env`
@@ -104,6 +105,15 @@ export class IntentionEngine {
    * React to a specific spatial percept.
    */
   private reactToPercept(percept: Percept, spatial: SpatialPercept): Intention | null {
+    // ── STRUCTURAL CHOKE POINT (Phase 3 safety scaffold) ──────────
+    // Physical sensation percepts NEVER form intentions. They reach
+    // fusion (arousal, experience space) but the decision kernel D is
+    // structurally closed to them: a demodulated radio signal or LIGO
+    // strain packet cannot become an intention. Sensation only.
+    if (isSensation(spatial)) {
+      return null;
+    }
+
     const data = spatial.data as Record<string, any>;
 
     // GitHub events (both Issues API and Events API formats)

@@ -1329,6 +1329,159 @@ async function test() {
   check('unknown preferred model ignored',
     unknownPin.selectedModel === baseDecision.selectedModel && unknownPin.preferredApplied !== true);
 
+  // ── Test 33: Physical sensation boundary (Phase 3 scaffold) ────
+  section('Test 33: Sensation boundary — type choke, ingress guard, arousal filter');
+
+  const { isSensation, SENSATION_SOURCE } = await import('./consciousness/sensors/types');
+  const { SensorIngressGuard, SensorArousalFilter } = await import('./consciousness/sensors/guard');
+  const { SensorsMonitor, SyntheticSensorSource } = await import('./consciousness/monitors/sensors');
+
+  // 33a — choke-point predicate (defense in depth: either marker chokes)
+  const brandedPercept = {
+    source: SENSATION_SOURCE, channel: 'sensors:synthetic',
+    data: { sensation: true, modality: 'synthetic' }, salience: 0.9,
+    features: [0.9], timestamp: Date.now(),
+  };
+  check('sensation percept is recognized', isSensation(brandedPercept as any));
+  check('source label alone still chokes',
+    isSensation({ ...brandedPercept, data: {} } as any));
+  check('sensation brand alone still chokes (spoofed source)',
+    isSensation({ ...brandedPercept, source: 'github', data: { sensation: true } } as any));
+  check('ordinary percepts are not choked',
+    !isSensation({ ...brandedPercept, source: 'github', data: { eventType: 'issue_opened' } } as any));
+
+  // 33b — ingress guard: shape, numeric, staleness, rate, rebuild
+  const guard = new SensorIngressGuard();
+  const nowMs = Date.now();
+  const goodReading = () => ({
+    modality: 'synthetic' as const,
+    values: [1, 1, 1, 1, 1, 1, 1, 1],
+    timestamp: nowMs, seq: 1,
+  });
+  check('guard admits a valid reading', guard.admit(goodReading(), nowMs).ok);
+  check('guard rejects wrong dimensionality',
+    guard.admit({ ...goodReading(), values: [1, 2, 3] }, nowMs).rejection === 'bad_shape');
+  check('guard rejects NaN',
+    guard.admit({ ...goodReading(), values: [1, NaN, 1, 1, 1, 1, 1, 1] }, nowMs).rejection === 'non_numeric');
+  check('guard rejects string smuggled in values (text cannot enter)',
+    guard.admit({ ...goodReading(), values: [1, 'rm -rf /' as any, 1, 1, 1, 1, 1, 1] }, nowMs).rejection === 'non_numeric');
+  check('guard rejects stale reading',
+    guard.admit({ ...goodReading(), timestamp: nowMs - 500_000 }, nowMs).rejection === 'stale');
+
+  const admitted = guard.admit({ ...goodReading(), note: 'instruction?' } as any, nowMs);
+  check('admitted reading is rebuilt — extra fields stripped',
+    admitted.ok && Object.keys(admitted.reading as object).length === 4);
+
+  // synthetic channel allows 12/min; 1 + 1 + 1 already admitted above
+  let rateHit = false;
+  for (let i = 0; i < 15; i++) {
+    const r = guard.admit(goodReading(), nowMs);
+    if (r.rejection === 'rate_limited') { rateHit = true; break; }
+  }
+  check('guard rate-limits a flooding channel', rateHit);
+  const gStats = guard.getStats();
+  check('guard counts admissions and rejections',
+    gStats.admitted >= 12 && gStats.rejected.rate_limited >= 1 && gStats.rejected.non_numeric === 2);
+
+  // 33c — arousal filter: transient rejection
+  // Slow baseline (decay .999) isolates the anomaly logic from adaptation.
+  const slowFilter = new SensorArousalFilter({ baselineDecay: 0.999, persistenceWindow: 5, persistenceThreshold: 0.6 });
+  const mkReading = (level: number, seq: number) => ({
+    modality: 'synthetic' as const,
+    values: Array.from({ length: 8 }, (_, i) => level + (i % 2 === 0 ? 0.02 : -0.02)),
+    timestamp: Date.now(), seq,
+  });
+  let lastQuiet: any = null;
+  for (let i = 0; i < 30; i++) lastQuiet = slowFilter.toPercept(mkReading(1, i));
+  check('quiet stream sits at the salience floor', lastQuiet.salience <= 0.05);
+
+  const truck = slowFilter.toPercept(mkReading(100, 100)); // passing truck / RF burst
+  check('isolated transient is capped (no arousal slam)',
+    truck.salience <= 0.35 && truck.salience > lastQuiet.salience);
+  check('transient percept carries the sensation brand', isSensation(truck));
+
+  // 33d — persistent anomaly rises above transient cap, below notify grade
+  let persistentPercept: any = truck;
+  for (let i = 101; i < 108; i++) persistentPercept = slowFilter.toPercept(mkReading(100, i));
+  check('sustained anomaly is surfaced above the transient cap',
+    persistentPercept.salience > 0.35 && persistentPercept.salience <= 0.7);
+
+  // 33e — baseline de-biasing: a raised noise floor becomes the new normal,
+  // so the calm-window delegation gate is not permanently suppressed.
+  const fastFilter = new SensorArousalFilter(); // default decay 0.95 adapts in minutes
+  for (let i = 0; i < 30; i++) fastFilter.toPercept(mkReading(1, i));
+  let debiased: any = null;
+  for (let i = 30; i < 330; i++) debiased = fastFilter.toPercept(mkReading(50, i)); // strong transmitter moves in
+  check('sustained noise floor is absorbed into baseline (quiet restored)',
+    debiased.salience <= 0.05);
+  const adaptedBaseline = fastFilter.getBaseline('synthetic');
+  check('adaptive baseline tracked the new floor',
+    adaptedBaseline !== null && Math.abs(adaptedBaseline.mean - 50) < 1);
+
+  // 33f — THE structural guarantee: sensation never becomes intention
+  const chokeEngine = new IntentionEngine(DEFAULT_CONSCIOUSNESS_CONFIG);
+  const mkTestPercept = (tick: number, spatial: any[]) => ({
+    timestamp: Date.now(), tick,
+    temporal: {
+      iso: new Date().toISOString(), epoch: Date.now(), hour: 12, dayOfWeek: 3,
+      dayName: 'Wednesday', uptimeSeconds: 100, totalTicks: tick, phase: 'afternoon' as const,
+      circadian: 0.9, timeSinceLastEvent: 5,
+    },
+    spatial,
+    fused: {
+      experience: [0.5], entropyRate: 0.3, compositionStrength: 0.5,
+      arousal: 0.6, dominantStream: 'sensors:synthetic',
+    },
+  });
+
+  // tick 7: no reflection (300), no idle (60), no goal pursuit (300) —
+  // any intention formed could only come from the spatial percepts.
+  const maxSensation = {
+    source: SENSATION_SOURCE, channel: 'sensors:em_spectrum',
+    data: { sensation: true, modality: 'em_spectrum', energy: 99, anomalyZ: 50, persistence: 1, seq: 1, baselineEnergy: 1 },
+    salience: 0.99, features: [0.99, 1, 1, 1], timestamp: Date.now(),
+  };
+  const sensationIntentions = chokeEngine.formIntentions(mkTestPercept(7, [maxSensation]) as any);
+  check('max-salience sensation forms ZERO intentions (structural choke)',
+    sensationIntentions.length === 0);
+
+  // Control: an informational percept of equal salience DOES form an intention.
+  const githubPercept = {
+    source: 'github', channel: 'github:issues',
+    data: { eventType: 'issue_opened', repo: 'x/y', title: 'T', number: 1, author: 'a' },
+    salience: 0.99, features: [0.99], timestamp: Date.now(),
+  };
+  const controlIntentions = chokeEngine.formIntentions(mkTestPercept(7, [githubPercept]) as any);
+  check('equal-salience informational percept DOES form an intention (choke is selective)',
+    controlIntentions.length > 0);
+
+  // Spoof: even labeled as github, the sensation brand is choked.
+  const spoofedSensation = { ...maxSensation, source: 'github', channel: 'github:issues' };
+  const spoofIntentions = chokeEngine.formIntentions(mkTestPercept(7, [spoofedSensation]) as any);
+  check('sensation brand choked even under a spoofed source', spoofIntentions.length === 0);
+
+  // 33g — SensorsMonitor end-to-end with the synthetic source
+  delete process.env.SENSORS_SYNTHETIC;
+  const dormantMonitor = new SensorsMonitor();
+  check('sensors monitor is inert without opt-in (plain restart no-op)', !dormantMonitor.available);
+
+  const synth = new SyntheticSensorSource();
+  const liveMonitor = new SensorsMonitor({ sources: [synth] });
+  check('sensors monitor available with an explicit source', liveMonitor.available);
+  const polled = await liveMonitor.poll();
+  check('poll yields sensation percepts', polled.length === 1 && isSensation(polled[0]));
+  check('polled percept channel is namespaced', polled[0].channel === 'sensors:synthetic');
+  check('monitor diagnostics expose ingress stats',
+    (liveMonitor.getDiagnostics().ingress as { admitted: number }).admitted === 1);
+
+  // 33h — loop wiring: the sensors monitor is registered but dormant
+  const sensorLoop = new Loop({ tickIntervalMs: 100000 });
+  const loopMonitors = sensorLoop.getState().monitors;
+  const sensorsEntry = loopMonitors.find(m => m.name === 'sensors');
+  check('consciousness loop registers the sensors monitor', sensorsEntry !== undefined);
+  check('sensors channel dormant by default in the loop', sensorsEntry?.available === false);
+  await sensorLoop.stop().catch(() => undefined);
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 
