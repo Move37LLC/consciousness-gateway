@@ -1520,6 +1520,15 @@ async function test() {
   check('different seed → different synthetic stream',
     rA.some((v, i) => v !== rC[i]));
 
+  // Time-dependent generators (synthetic/env) must ALSO be wall-clock-free
+  // when seeded, or replay diverges by capture time.
+  const synWallA = createSyntheticSource('synthetic', 7);
+  const synWallB = createSyntheticSource('synthetic', 7);
+  const swA = synWallA.read(1_700_000_000_000).values;
+  const swB = synWallB.read(9_999_999_999_999).values; // different wall clock
+  check('seeded time-dependent source ignores wall clock (fully deterministic)',
+    swA.every((v, i) => v === swB[i]));
+
   // 33k — env-driven source selection (default + explicit modality list)
   check('buildSyntheticSources defaults to the synthetic modality',
     buildSyntheticSources({} as any).map(s => s.modality).join() === 'synthetic');
@@ -1528,6 +1537,8 @@ async function test() {
   } as any);
   check('buildSyntheticSources selects listed modalities and skips unknown',
     multi.length === 2 && multi[0].modality === 'field_magnetic' && multi[1].modality === 'field_imu');
+  check('buildSyntheticSources rejects prototype keys (no toString smuggling)',
+    buildSyntheticSources({ SENSORS_SYNTHETIC_MODALITIES: 'toString,constructor' } as any).length === 0);
 
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');

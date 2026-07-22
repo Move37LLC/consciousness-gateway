@@ -59,6 +59,23 @@ interface GenContext {
   seq: number;
   /** Additive transient for this window (0 when none pending). */
   spike: number;
+  /** True when the source is seeded — waveforms must ignore wall clock. */
+  deterministic: boolean;
+}
+
+const DAY_MS = 86_400_000;
+/** One synthetic "day" in reads at the ~15s poll cadence. */
+const DAY_READS = 5760;
+
+/**
+ * Diurnal phase in [0,1). Seeded sources derive it from the sequence counter
+ * so replay is bit-for-bit reproducible; unseeded sources track wall clock so
+ * the live stream feels day/night in sync with reality.
+ */
+function diurnalPhase(ctx: GenContext): number {
+  return ctx.deterministic
+    ? (ctx.seq % DAY_READS) / DAY_READS
+    : (ctx.now % DAY_MS) / DAY_MS;
 }
 
 export interface SyntheticSourceConfig {
@@ -77,9 +94,9 @@ function gauss(rng: () => number): number {
 /** synthetic (dim 8) — dimensionless pseudo-diurnal scaffold waveform. */
 const SYNTHETIC_GEN: SyntheticSourceConfig = {
   modality: 'synthetic', dim: 8, seedOffset: 0,
-  generate: ({ rng, now, spike }) => {
-    const phase = (now % 86_400_000) / 86_400_000;
-    const base = 1 + 0.5 * Math.sin(2 * Math.PI * phase);
+  generate: (ctx) => {
+    const { rng, spike } = ctx;
+    const base = 1 + 0.5 * Math.sin(2 * Math.PI * diurnalPhase(ctx));
     return Array.from({ length: 8 }, (_, i) =>
       base * (1 + 0.05 * Math.sin(i)) + spike + (rng() - 0.5) * 0.02);
   },
@@ -133,8 +150,9 @@ const IMU_GEN: SyntheticSourceConfig = {
 /** field_environment (dim 5) — [tempC, hPa, RH%, lux, dB]. */
 const ENV_GEN: SyntheticSourceConfig = {
   modality: 'field_environment', dim: 5, seedOffset: 505,
-  generate: ({ rng, now, spike }) => {
-    const phase = (now % 86_400_000) / 86_400_000;
+  generate: (ctx) => {
+    const { rng, spike } = ctx;
+    const phase = diurnalPhase(ctx);
     return [
       22 + 3 * Math.sin(2 * Math.PI * phase) + gauss(rng) * 0.1,  // tempC — diurnal
       1013 + gauss(rng) * 0.5,                                     // hPa
@@ -172,6 +190,7 @@ export class SyntheticSensorSource implements SensorSource {
   readonly dim: number;
   private readonly config: SyntheticSourceConfig;
   private readonly rng: () => number;
+  private readonly deterministic: boolean;
   private seq = 0;
   /** When set, the next read() emits a spike of this amplitude. */
   private pendingSpike: number | null = null;
@@ -180,6 +199,7 @@ export class SyntheticSensorSource implements SensorSource {
     this.config = config;
     this.modality = config.modality;
     this.dim = config.dim;
+    this.deterministic = seed !== undefined;
     this.rng = seed === undefined
       ? Math.random
       : mulberry32((seed + config.seedOffset) >>> 0);
@@ -193,7 +213,9 @@ export class SyntheticSensorSource implements SensorSource {
     this.seq++;
     const spike = this.pendingSpike ?? 0;
     this.pendingSpike = null;
-    const values = this.config.generate({ rng: this.rng, now, seq: this.seq, spike });
+    const values = this.config.generate({
+      rng: this.rng, now, seq: this.seq, spike, deterministic: this.deterministic,
+    });
     return { modality: this.modality, values, timestamp: now, seq: this.seq };
   }
 }
@@ -218,7 +240,8 @@ export function buildSyntheticSources(env: NodeJS.ProcessEnv = process.env): Sen
     .split(',').map(s => s.trim()).filter(Boolean);
   const sources: SensorSource[] = [];
   for (const m of requested) {
-    if (m in GENERATORS) {
+    // Own-property only: guards against prototype keys like 'toString'.
+    if (Object.prototype.hasOwnProperty.call(GENERATORS, m)) {
       sources.push(createSyntheticSource(m as PhysicalModality, seed));
     } else {
       console.warn(`  [sensors] ignoring unknown synthetic modality '${m}'`);
