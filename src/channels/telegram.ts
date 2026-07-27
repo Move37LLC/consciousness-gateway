@@ -22,7 +22,7 @@ import { ConsciousnessLoop } from '../consciousness/loop';
 import { ConsciousnessGateway } from '../core/gateway';
 import { Message } from '../core/types';
 import { v4 as uuid } from 'uuid';
-import { VoiceId, VOICES, buildPersonalityContext } from '../personalities/voices';
+import { VoiceId, VOICES, buildPersonalityContext, resolvePreferredModel } from '../personalities/voices';
 import { WebSearchTool } from '../tools/search';
 import { WebBrowseTool } from '../tools/browse';
 import { TranscriptSearchTool, detectTopics } from '../tools/transcripts';
@@ -535,7 +535,7 @@ export class TelegramChannel {
         const routeMsg: Message = { ...message, id: uuid(), content: prompt };
         const resp = await this.gateway.route(routeMsg, {
           systemPrompt: sysPrompt || systemPrompt,
-          preferredModel: VOICES.gateway.preferredModel,
+          preferredModel: resolvePreferredModel('gateway'),
         });
         if ('error' in resp) throw new Error((resp as any).reason);
         lastRouteResponse = resp;
@@ -664,7 +664,7 @@ export class TelegramChannel {
         const resp = await this.gateway.route(routeMessage, {
           systemPrompt: sysPrompt || systemPrompt,
           temperature: ctx.temperature,
-          preferredModel: voice.preferredModel,
+          preferredModel: ctx.preferredModel,
         });
         if ('error' in resp) throw new Error((resp as any).reason);
         lastRouteResponse = resp;

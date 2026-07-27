@@ -22,7 +22,7 @@ import { TelegramChannel, TelegramConfig } from './channels/telegram';
 import { DEFAULT_CONFIG } from './core/config';
 import { Message } from './core/types';
 import { v4 as uuid } from 'uuid';
-import { VoiceId, VOICES, buildPersonalityContext } from './personalities/voices';
+import { VoiceId, VOICES, buildPersonalityContext, resolvePreferredModel } from './personalities/voices';
 import { WebSearchTool } from './tools/search';
 import { WebBrowseTool } from './tools/browse';
 import { TranscriptSearchTool } from './tools/transcripts';
@@ -260,7 +260,7 @@ app.post('/v1/chat', async (req, res) => {
     callOptions.temperature = ctx.temperature;
     // Pin the persona's preferred model as a soft floor (router still enforces
     // capability constraints; provider registry still handles availability fallback).
-    callOptions.preferredModel = VOICES[resolvedPersonality].preferredModel;
+    callOptions.preferredModel = ctx.preferredModel;
 
     // Load additional documents if requested
     const loadDocs = documentProject !== 'none';
@@ -487,7 +487,7 @@ app.get('/v1/voices', (_req, res) => {
     name: v.name,
     emoji: v.emoji,
     description: v.description,
-    preferredModel: v.preferredModel,
+    preferredModel: resolvePreferredModel(v.id),
   }));
   res.json({ voices });
 });

@@ -1540,6 +1540,71 @@ async function test() {
   check('buildSyntheticSources rejects prototype keys (no toString smuggling)',
     buildSyntheticSources({ SENSORS_SYNTHETIC_MODALITIES: 'toString,constructor' } as any).length === 0);
 
+  // ── Test 34: Moonshot provider (Kimi K3) ───────────────────────
+  section('Test 34: Moonshot provider — Kimi K3 registration, gating, fallback');
+
+  const { MoonshotProvider } = await import('./agents/providers');
+  const { DEFAULT_CONFIG: k3cfg } = await import('./core/config');
+
+  // 34a — model registration and the ratified capability profile
+  const k3 = k3cfg.providers.flatMap(p => p.models).find(m => m.id === 'kimi-k3');
+  check('kimi-k3 is registered in the model pool', k3 !== undefined);
+  check('kimi-k3 declares native vision', k3?.capabilities.vision === true);
+  check('kimi-k3 carries the 1M context window', k3?.maxTokens === 1_000_000);
+  check('kimi-k3 safety scored below the Claude models (new model, no record)',
+    (k3?.capabilities.safety ?? 1) < 0.95);
+
+  // 34b — key gating: no key means unavailable, never a throw
+  const savedMoonshotKey = process.env.MOONSHOT_API_KEY;
+  delete process.env.MOONSHOT_API_KEY;
+  check('provider unavailable without MOONSHOT_API_KEY', !new MoonshotProvider().available);
+  process.env.MOONSHOT_API_KEY = 'test-key-not-real';
+  check('provider available once a key is present', new MoonshotProvider().available);
+  if (savedMoonshotKey === undefined) delete process.env.MOONSHOT_API_KEY;
+  else process.env.MOONSHOT_API_KEY = savedMoonshotKey;
+
+  // 34c — registry wiring
+  const k3Registry = new ProviderRegistry();
+  const k3Status = k3Registry.getStatus();
+  check('moonshot provider is registered', k3Status.some(s => s.name === 'moonshot'));
+
+  // 34d — the router can pin kimi-k3 (what preferredModel would do)
+  const k3Router = new ProductAlgebraRouter(k3cfg);
+  const k3Pin = k3Router.route(textMsg, undefined, 'kimi-k3');
+  check('router pins kimi-k3 when preferred', k3Pin.selectedModel === 'kimi-k3');
+  const k3VisionPin = k3Router.route(imageMsg, undefined, 'kimi-k3');
+  check('kimi-k3 pinned for a vision request too (native vision)',
+    k3VisionPin.selectedModel === 'kimi-k3');
+
+  // 34e — graceful degradation: routing kimi-k3 with no Moonshot key must
+  // fall through the chain (or to the placeholder), never throw. This is what
+  // keeps the Gateway behaving exactly as today until the key is set.
+  const k3NoKey = savedMoonshotKey;
+  delete process.env.MOONSHOT_API_KEY;
+  const degraded = await new ProviderRegistry().call('kimi-k3', 'ping');
+  check('kimi-k3 without a key degrades instead of throwing',
+    typeof degraded.content === 'string' && degraded.content.length > 0);
+  if (k3NoKey !== undefined) process.env.MOONSHOT_API_KEY = k3NoKey;
+
+  // 34f — GATEWAY_PREFERRED_MODEL override: one variable moves every persona,
+  // and removing it reverts. Nothing changes while it is unset.
+  const { resolvePreferredModel } = await import('./personalities/voices');
+  const savedPrefEnv = process.env.GATEWAY_PREFERRED_MODEL;
+  delete process.env.GATEWAY_PREFERRED_MODEL;
+  check('unset override leaves each voice on its declared model',
+    resolvePreferredModel('kern') === voices.kern.preferredModel
+    && resolvePreferredModel('gateway') === voices.gateway.preferredModel);
+  process.env.GATEWAY_PREFERRED_MODEL = 'kimi-k3';
+  check('override moves every persona onto the named model',
+    resolvePreferredModel('kern') === 'kimi-k3'
+    && resolvePreferredModel('beaumont') === 'kimi-k3'
+    && resolvePreferredModel('gateway') === 'kimi-k3');
+  process.env.GATEWAY_PREFERRED_MODEL = '   ';
+  check('blank override is ignored (treated as unset)',
+    resolvePreferredModel('kern') === voices.kern.preferredModel);
+  if (savedPrefEnv === undefined) delete process.env.GATEWAY_PREFERRED_MODEL;
+  else process.env.GATEWAY_PREFERRED_MODEL = savedPrefEnv;
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 

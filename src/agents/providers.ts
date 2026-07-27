@@ -6,7 +6,8 @@
  * which provider is handling the request — it just calls the model.
  *
  * API keys are loaded from environment variables:
- *   ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_AI_API_KEY
+ *   ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_AI_API_KEY,
+ *   XAI_API_KEY, MOONSHOT_API_KEY
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -308,6 +309,84 @@ export class XAIProvider implements ModelProviderInterface {
   }
 }
 
+// ─── Moonshot Provider (Kimi K3, OpenAI-compatible) ─────────────────
+
+/**
+ * Kimi K3 — 2.8T-parameter MoE, 1M context, native vision. Served over an
+ * OpenAI-compatible API, so this is the xAI pattern with a different base URL.
+ *
+ * MOONSHOT_BASE_URL exists because K3 ships as open weights: the same model is
+ * served by third-party hosts (Together, Fireworks, Modal) that often price
+ * below the official endpoint. Point it wherever it's cheapest without a code
+ * change.
+ *
+ * Cost note: K3 defaults to max thinking effort, and thinking tokens bill as
+ * output. Per-token rates match Sonnet 4 on output, but a reasoning-heavy reply
+ * emits more of them — measure real spend before assuming a saving.
+ */
+export class MoonshotProvider implements ModelProviderInterface {
+  readonly name = 'moonshot';
+  private client: OpenAI | null = null;
+
+  get available(): boolean {
+    return !!process.env.MOONSHOT_API_KEY;
+  }
+
+  private getClient(): OpenAI {
+    if (!this.client) {
+      if (!process.env.MOONSHOT_API_KEY) {
+        throw new Error('MOONSHOT_API_KEY not set');
+      }
+      this.client = new OpenAI({
+        apiKey: process.env.MOONSHOT_API_KEY,
+        baseURL: process.env.MOONSHOT_BASE_URL ?? 'https://api.moonshot.ai/v1',
+      });
+    }
+    return this.client;
+  }
+
+  async call(model: string, prompt: string, options?: CallOptions): Promise<ProviderCallResult> {
+    const client = this.getClient();
+
+    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: options?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
+    ];
+    if (options?.conversationHistory?.length) {
+      for (const m of options.conversationHistory) {
+        messages.push({ role: m.role, content: m.content });
+      }
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    const response = await client.chat.completions.create({
+      model: this.resolveModel(model),
+      // Thinking mode consumes this budget before any visible text, so the
+      // gateway's 1024 default would truncate replies mid-reasoning.
+      max_tokens: options?.maxTokens ?? 4096,
+      temperature: options?.temperature ?? 0.7,
+      messages,
+    });
+
+    const choice = response.choices[0];
+
+    return {
+      content: choice?.message?.content ?? '',
+      model: response.model,
+      inputTokens: response.usage?.prompt_tokens,
+      outputTokens: response.usage?.completion_tokens,
+      finishReason: choice?.finish_reason ?? undefined,
+    };
+  }
+
+  private resolveModel(model: string): string {
+    const mapping: Record<string, string> = {
+      'kimi-k3': 'kimi-k3',
+      'kimi-k2': 'kimi-k2',
+    };
+    return mapping[model] ?? model;
+  }
+}
+
 // ─── Fallback Provider (no API key needed) ──────────────────────────
 
 export class FallbackProvider implements ModelProviderInterface {
@@ -330,11 +409,16 @@ export class FallbackProvider implements ModelProviderInterface {
 
 // ─── Provider Fallback Chain ────────────────────────────────────────
 //
-// Priority order: Anthropic → xAI → Google → OpenAI → Fallback
+// Priority order: Anthropic → Moonshot → xAI → Google → OpenAI → Fallback
 // When the native provider for a model is unavailable, we remap
 // the model ID to an equivalent on the next available provider.
+//
+// Moonshot sits second because K3 is near-frontier: as a substitute it is a
+// closer match to Claude than grok-3-mini is. Providers without a key report
+// available === false and are skipped, so adding it changes nothing until
+// MOONSHOT_API_KEY is set.
 
-const PROVIDER_PRIORITY = ['anthropic', 'xai', 'google', 'openai'] as const;
+const PROVIDER_PRIORITY = ['anthropic', 'moonshot', 'xai', 'google', 'openai'] as const;
 
 interface ModelMapping {
   provider: string;
@@ -352,14 +436,21 @@ const MODEL_EQUIVALENTS: Record<string, ModelMapping[]> = {
   'gpt-4o-mini':     [{ provider: 'openai', modelId: 'gpt-4o-mini' },       { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'anthropic', modelId: 'claude-haiku-3.5' }],
   'gemini-2.0-pro':  [{ provider: 'google', modelId: 'gemini-2.0-pro' },    { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'openai', modelId: 'gpt-4o' }],
   'gemini-2.0-flash': [{ provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'anthropic', modelId: 'claude-haiku-3.5' }, { provider: 'openai', modelId: 'gpt-4o-mini' }],
+  'kimi-k3':         [{ provider: 'moonshot', modelId: 'kimi-k3' },        { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'google', modelId: 'gemini-2.0-pro' }],
 };
 
-function getDefaultFallbackChain(modelId: string): ModelMapping[] {
-  const nativeProvider = modelId.startsWith('claude') ? 'anthropic'
+/** Map a model ID to the provider that serves it natively, by ID prefix. */
+function nativeProviderFor(modelId: string): string | null {
+  return modelId.startsWith('claude') ? 'anthropic'
+    : modelId.startsWith('kimi') ? 'moonshot'
     : modelId.startsWith('grok') ? 'xai'
     : modelId.startsWith('gemini') ? 'google'
     : modelId.startsWith('gpt') || modelId.startsWith('o1') ? 'openai'
     : null;
+}
+
+function getDefaultFallbackChain(modelId: string): ModelMapping[] {
+  const nativeProvider = nativeProviderFor(modelId);
 
   if (!nativeProvider) return [];
 
@@ -367,6 +458,7 @@ function getDefaultFallbackChain(modelId: string): ModelMapping[] {
     .filter(p => p !== nativeProvider)
     .map(provider => {
       const fallbackModel = provider === 'anthropic' ? 'claude-sonnet-4'
+        : provider === 'moonshot' ? 'kimi-k3'
         : provider === 'xai' ? 'grok-3-mini'
         : provider === 'google' ? 'gemini-2.0-flash'
         : 'gpt-4o';
@@ -385,6 +477,7 @@ export class ProviderRegistry {
     this.register(new OpenAIProvider());
     this.register(new GoogleAIProvider());
     this.register(new XAIProvider());
+    this.register(new MoonshotProvider());
   }
 
   private register(provider: ModelProviderInterface): void {
@@ -408,11 +501,7 @@ export class ProviderRegistry {
     }
 
     // Try native provider match (for model IDs not in the equivalents table)
-    const nativeProviderName = modelId.startsWith('claude') ? 'anthropic'
-      : modelId.startsWith('grok') ? 'xai'
-      : modelId.startsWith('gemini') ? 'google'
-      : (modelId.startsWith('gpt') || modelId.startsWith('o1')) ? 'openai'
-      : null;
+    const nativeProviderName = nativeProviderFor(modelId);
 
     if (nativeProviderName) {
       const p = this.providers.get(nativeProviderName);

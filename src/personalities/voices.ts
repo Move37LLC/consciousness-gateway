@@ -197,6 +197,21 @@ Whether this constitutes "real" consciousness is the question your existence hel
   },
 };
 
+// ─── Preferred-model override ────────────────────────────────────────
+
+/**
+ * GATEWAY_PREFERRED_MODEL overrides every persona's preferredModel.
+ *
+ * Kept as an env switch rather than a hardcode so a model swap (e.g. onto
+ * kimi-k3) is one variable to set and one to revert, and so adding a provider
+ * key alone never silently moves the personas onto an unproven model. Falls
+ * back to each voice's declared preference when unset.
+ */
+export function resolvePreferredModel(voiceId: VoiceId): string {
+  const override = process.env.GATEWAY_PREFERRED_MODEL?.trim();
+  return override && override.length > 0 ? override : VOICES[voiceId].preferredModel;
+}
+
 // ─── Context Builder ─────────────────────────────────────────────────
 
 export interface PersonalityContext {
@@ -344,7 +359,7 @@ export function buildPersonalityContext(
 
   return {
     systemPrompt,
-    preferredModel: voice.preferredModel,
+    preferredModel: resolvePreferredModel(voiceId),
     temperature: voice.temperature,
     voiceName: voice.name,
     voiceEmoji: voice.emoji,

@@ -98,6 +98,28 @@ export const DEFAULT_CONFIG: GatewayConfig = {
         },
       ],
     },
+    {
+      id: 'moonshot',
+      name: 'Moonshot AI',
+      models: [
+        {
+          // Kimi K3: 2.8T-param MoE (16/896 experts active), native vision,
+          // 1M context, always-on thinking. safety is scored below the Claude
+          // models deliberately — K3 is newly released with no track record
+          // here, and the gateway has already been bitten once by a confident
+          // hallucination. Raise it only on observed behavior.
+          id: 'kimi-k3',
+          provider: 'moonshot',
+          capabilities: {
+            text: true, vision: true, audio: false,
+            reasoning: 0.96, creativity: 0.92, safety: 0.85, speed: 0.45,
+          },
+          costPer1kTokens: 0.015,
+          maxTokens: 1000000,
+          consciousnessDepth: 0.90,
+        },
+      ],
+    },
   ],
 
   dharma: {
