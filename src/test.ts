@@ -1554,6 +1554,21 @@ async function test() {
   check('kimi-k3 safety scored below the Claude models (new model, no record)',
     (k3?.capabilities.safety ?? 1) < 0.95);
 
+  // The cheap lane: K2.6 / K2.7-code bill at $4.00/MTok output against K3's
+  // and Sonnet 4's $15.00, so they must be materially cheaper in the pool.
+  const k26 = k3cfg.providers.flatMap(p => p.models).find(m => m.id === 'kimi-k2.6');
+  const k27 = k3cfg.providers.flatMap(p => p.models).find(m => m.id === 'kimi-k2.7-code');
+  const sonnet = k3cfg.providers.flatMap(p => p.models).find(m => m.id === 'claude-sonnet-4');
+  check('kimi-k2.6 is registered', k26 !== undefined);
+  check('kimi-k2.7-code is registered', k27 !== undefined);
+  check('cheap lane costs materially less than the judgment lane',
+    (k26?.costPer1kTokens ?? 1) < (k3?.costPer1kTokens ?? 0)
+    && (k26?.costPer1kTokens ?? 1) < (sonnet?.costPer1kTokens ?? 0));
+  check('kimi-k2.6 keeps vision (multimodal cheap lane)', k26?.capabilities.vision === true);
+  check('kimi-k2.7-code is text-only', k27?.capabilities.vision === false);
+  check('cheap lane routes to moonshot natively',
+    k26?.provider === 'moonshot' && k27?.provider === 'moonshot');
+
   // 34b — key gating: no key means unavailable, never a throw
   const savedMoonshotKey = process.env.MOONSHOT_API_KEY;
   delete process.env.MOONSHOT_API_KEY;

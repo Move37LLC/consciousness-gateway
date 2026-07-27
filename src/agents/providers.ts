@@ -387,7 +387,8 @@ export class MoonshotProvider implements ModelProviderInterface {
 
     const mapping: Record<string, string> = {
       'kimi-k3': 'kimi-k3',
-      'kimi-k2': 'kimi-k2',
+      'kimi-k2.6': 'kimi-k2.6',
+      'kimi-k2.7-code': 'kimi-k2.7-code',
     };
     return mapping[model] ?? model;
   }
@@ -443,6 +444,8 @@ const MODEL_EQUIVALENTS: Record<string, ModelMapping[]> = {
   'gemini-2.0-pro':  [{ provider: 'google', modelId: 'gemini-2.0-pro' },    { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'openai', modelId: 'gpt-4o' }],
   'gemini-2.0-flash': [{ provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'anthropic', modelId: 'claude-haiku-3.5' }, { provider: 'openai', modelId: 'gpt-4o-mini' }],
   'kimi-k3':         [{ provider: 'moonshot', modelId: 'kimi-k3' },        { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'google', modelId: 'gemini-2.0-pro' }],
+  'kimi-k2.6':       [{ provider: 'moonshot', modelId: 'kimi-k2.6' },      { provider: 'xai', modelId: 'grok-3-mini' },  { provider: 'google', modelId: 'gemini-2.0-flash' }, { provider: 'anthropic', modelId: 'claude-haiku-3.5' }],
+  'kimi-k2.7-code':  [{ provider: 'moonshot', modelId: 'kimi-k2.7-code' }, { provider: 'anthropic', modelId: 'claude-sonnet-4' }, { provider: 'xai', modelId: 'grok-3' },     { provider: 'google', modelId: 'gemini-2.0-pro' }],
 };
 
 /** Map a model ID to the provider that serves it natively, by ID prefix. */

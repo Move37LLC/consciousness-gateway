@@ -118,6 +118,34 @@ export const DEFAULT_CONFIG: GatewayConfig = {
           maxTokens: 1000000,
           consciousnessDepth: 0.90,
         },
+        {
+          // Kimi K2.6: vision + text, 256k context, thinking/non-thinking.
+          // Output is $4.00/MTok against K3's and Sonnet 4's $15.00 — the
+          // cheap lane for high-volume loop traffic where judgment is not at
+          // stake. Not for the delegation/director path.
+          id: 'kimi-k2.6',
+          provider: 'moonshot',
+          capabilities: {
+            text: true, vision: true, audio: false,
+            reasoning: 0.88, creativity: 0.85, safety: 0.84, speed: 0.75,
+          },
+          costPer1kTokens: 0.004,
+          maxTokens: 262144,
+          consciousnessDepth: 0.70,
+        },
+        {
+          // Kimi K2.7 Code: same price tier as K2.6, tuned for long-context
+          // instruction following on code. Text only.
+          id: 'kimi-k2.7-code',
+          provider: 'moonshot',
+          capabilities: {
+            text: true, vision: false, audio: false,
+            reasoning: 0.90, creativity: 0.80, safety: 0.84, speed: 0.75,
+          },
+          costPer1kTokens: 0.004,
+          maxTokens: 262144,
+          consciousnessDepth: 0.65,
+        },
       ],
     },
   ],
