@@ -379,6 +379,12 @@ export class MoonshotProvider implements ModelProviderInterface {
   }
 
   private resolveModel(model: string): string {
+    // Hosts of the open weights name the model differently on the wire:
+    // Moonshot uses 'kimi-k3', OpenRouter uses 'moonshotai/kimi-k3'.
+    // MOONSHOT_MODEL_ID overrides the outbound name for any such host.
+    const override = process.env.MOONSHOT_MODEL_ID?.trim();
+    if (override) return override;
+
     const mapping: Record<string, string> = {
       'kimi-k3': 'kimi-k3',
       'kimi-k2': 'kimi-k2',
