@@ -19,10 +19,10 @@ config (`config.yaml`) provides the fallback safety net automatically.
 
 | Tier | Model | Cost (blended $/M) | Use for |
 |------|-------|--------------------|---------|
-| **Default** | Claude Haiku 4.5 | ~$0.66 | The bulk of turns: tool work, terminal, file ops, code, web, memory, drafting, research. |
-| **Escalate** | Claude Sonnet 5 | ~$1.32 (intro thru Aug 31) | Ambiguous multi-step tasks; public-facing copy drafts; anything where a wrong answer is worse than a refusal. |
-| **High-stakes** | Claude Opus 4.8 | ~$3.29 | Irreversible actions; financial or security decisions; unreviewed public publication. Best-measured calibration — abstains rather than fabricates. |
-| **Fallback** | Kimi K2.6 → Sonnet | automatic | Provider failure only. Not a choice — the config chain handles it. |
+| **Default** | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) | ~$0.66 | The bulk of turns: tool work, terminal, file ops, code, web, memory, drafting, research. |
+| **Escalate** | Best available Anthropic Sonnet above Haiku | higher | Ambiguous multi-step tasks; public-facing copy drafts; anything where a wrong answer is worse than a refusal. Prefer Sonnet 5 if present; otherwise the newest Sonnet Hermes can actually resolve. Verify with `/model <id> --once` before relying on it. |
+| **High-stakes** | Best available Anthropic Opus (`Opus 4.8` preferred) | highest | Irreversible actions; financial or security decisions; unreviewed public publication. Prefer Opus 4.8 (best measured calibration — abstains rather than fabricates). If Hermes cannot resolve it, escalate to the strongest Opus that answers a throwaway call. Do NOT use Opus 5 if available — it regressed on calibration vs 4.8. |
+| **Fallback** | `kimi-k3` via `kimi` | automatic | Provider failure only. Configured in `fallback_providers`. Not a choice. (kimi-k2 / kimi-k2.6 do not resolve on this install.) |
 
 ## When to escalate (and when NOT to)
 

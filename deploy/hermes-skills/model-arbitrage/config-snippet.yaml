@@ -17,20 +17,30 @@ model:
 # ─── Fallback: automatic safety net on provider failure ────────────
 # Ordered. Tried in sequence when the primary rate-limits, errors,
 # refuses, or returns an invalid response. Primary restores next turn.
-# Kimi K2.6 is the first net (cheap, OpenAI-compatible, key already set);
-# Sonnet is the second (higher fidelity) if Kimi is also unreachable.
+#
+# VERIFIED 2026-07-29 on the Mac Mini's live Hermes model list:
+#   - kimi-k2 and kimi-k2.6 do NOT resolve; only kimi-k3 / kimi-k2 /
+#     kimi-k2-turbo-preview appeared, and kimi-k2 failed a live call.
+#   - So the first net is kimi-k3 (expensive, but the only Kimi model
+#     that actually works). Prefer a third-provider net (xAI / Google)
+#     over a second Anthropic entry — same-provider fallback is useless
+#     during an Anthropic outage.
 fallback_providers:
   - provider: kimi        # alias of the kimi-coding plugin; uses KIMI_API_KEY
-    model: kimi-k2.6
-  - provider: anthropic
-    model: claude-sonnet-5
+    model: kimi-k3
 
 # ─── Notes ─────────────────────────────────────────────────────────
-# Escalation (Sonnet 5 / Opus 4.8) is NOT configured here — it is driven
+# Escalation (Sonnet / Opus) is NOT configured here — it is driven
 # per-turn by the model-arbitrage skill via `/model <model> --once`,
 # because Hermes has no native difficulty-based auto-router. The skill
 # decides when a turn warrants a stronger model; config only provides
 # the failure safety net.
+#
+# Anthropic escalation IDs must be verified against Hermes' live list
+# before the skill's named targets can be trusted — the picker cache
+# on this Mini showed a vintage mix (Haiku 4.5 + Sonnet 3.5 + Opus 3),
+# and `hermes model --refresh` is interactive-only so it doesn't print
+# IDs. Confirm with a throwaway `/model <candidate> --once` call.
 #
 # To pilot a cheaper default later (Gemini 2.5 Flash-Lite or
 # GPT-5.4-nano), add the provider under `providers:` and switch
