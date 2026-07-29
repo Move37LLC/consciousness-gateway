@@ -16,6 +16,7 @@
  */
 
 import { ConsciousnessLoop } from '../consciousness/loop';
+import { buildArchitectureSection } from './architecture';
 import { MemoryEntry, ConsciousnessState, DopamineState } from '../consciousness/types';
 import { Document } from '../documents/types';
 import { SystemDocument } from '../documents/system-store';
@@ -277,6 +278,11 @@ export function buildPersonalityContext(
   parts.push(
     voice.corePrompt,
   );
+
+  // Live architecture: generated from the actual provider registry every
+  // request, so the persona describes the system as it is, not as a static
+  // markdown file froze it. Injected early so it outranks stale prose below.
+  parts.push('', buildArchitectureSection());
 
   // Honest override when the file corpus is offline (path missing / empty).
   if (options?.transcriptAvailable === false) {

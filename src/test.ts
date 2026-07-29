@@ -1620,6 +1620,24 @@ async function test() {
   if (savedPrefEnv === undefined) delete process.env.GATEWAY_PREFERRED_MODEL;
   else process.env.GATEWAY_PREFERRED_MODEL = savedPrefEnv;
 
+  // 34g — live architecture section reflects the running key set, so personas
+  // stop describing a frozen provider list. With MOONSHOT_API_KEY set the
+  // block marks moonshot available; unset it marks ✗. The section must always
+  // name the registered kimi models regardless of key state.
+  const { buildArchitectureSection } = await import('./personalities/architecture');
+  const savedArchKey = process.env.MOONSHOT_API_KEY;
+  process.env.MOONSHOT_API_KEY = 'test-key-not-real';
+  const withKey = buildArchitectureSection();
+  check('architecture section marks moonshot live when key present',
+    /Moonshot AI — ✓/.test(withKey));
+  check('architecture section names the registered kimi models',
+    withKey.includes('kimi-k3') && withKey.includes('kimi-k2.6') && withKey.includes('kimi-k2.7-code'));
+  delete process.env.MOONSHOT_API_KEY;
+  const withoutKey = buildArchitectureSection();
+  check('architecture section marks moonshot unavailable when key removed',
+    /Moonshot AI — ✗ \(no API key\)/.test(withoutKey));
+  if (savedArchKey !== undefined) process.env.MOONSHOT_API_KEY = savedArchKey;
+
   // ── Test: Telegram Module Importable ───────────────────────────
   section('Test: Telegram channel module');
 
