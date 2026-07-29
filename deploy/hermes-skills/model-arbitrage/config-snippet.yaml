@@ -1,0 +1,39 @@
+# Model arbitrage config for Hermes — merge into ~/.hermes/config.yaml
+#
+# Shape verified against NousResearch/hermes-agent @ main (2026-07-29):
+#   - fallback_providers: ordered cross-provider chain, auto-fires on
+#     rate-limit / auth / overload / invalid-response / content-refusal,
+#     restores the primary each new turn.
+#   - model.default + model.provider: the cheap proven default.
+#
+# IMPORTANT: the Kimi key is read from the environment, NOT stored here.
+# The kimi-coding plugin (alias 'kimi') expects KIMI_API_KEY to be set.
+
+# ─── Default: cheap + proven agentic model ─────────────────────────
+model:
+  default: claude-haiku-4-5-20251001
+  provider: anthropic
+
+# ─── Fallback: automatic safety net on provider failure ────────────
+# Ordered. Tried in sequence when the primary rate-limits, errors,
+# refuses, or returns an invalid response. Primary restores next turn.
+# Kimi K2.6 is the first net (cheap, OpenAI-compatible, key already set);
+# Sonnet is the second (higher fidelity) if Kimi is also unreachable.
+fallback_providers:
+  - provider: kimi        # alias of the kimi-coding plugin; uses KIMI_API_KEY
+    model: kimi-k2.6
+  - provider: anthropic
+    model: claude-sonnet-5
+
+# ─── Notes ─────────────────────────────────────────────────────────
+# Escalation (Sonnet 5 / Opus 4.8) is NOT configured here — it is driven
+# per-turn by the model-arbitrage skill via `/model <model> --once`,
+# because Hermes has no native difficulty-based auto-router. The skill
+# decides when a turn warrants a stronger model; config only provides
+# the failure safety net.
+#
+# To pilot a cheaper default later (Gemini 2.5 Flash-Lite or
+# GPT-5.4-nano), add the provider under `providers:` and switch
+# model.default — but only after it proves it can run Hermes' tool
+# chains; their low hallucination scores come from a summarization
+# benchmark that does not measure agentic tool use.
